@@ -26,6 +26,7 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   String? _validationMessage;
   List<Stop> _suggestions = const [];
   int _searchVersion = 0;
+  List<RouteOption> _routes = const [];
 
   @override
   void initState() {
@@ -67,17 +68,17 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
             child: Column(
               children: _suggestions
                   .map((stop) => ListTile(
-                dense: true,
-                leading: const Icon(Icons.train_rounded, size: 18),
-                title: Text(stop.name,
-                    style: const TextStyle(fontSize: 14)),
-                subtitle: Text(stop.platform,
-                    style: const TextStyle(fontSize: 11)),
-                onTap: () => setState(() {
-                  _destinationController.text = stop.name;
-                  _suggestions = const [];
-                }),
-              ))
+                        dense: true,
+                        leading: const Icon(Icons.train_rounded, size: 18),
+                        title: Text(stop.name,
+                            style: const TextStyle(fontSize: 14)),
+                        subtitle: Text(stop.platform,
+                            style: const TextStyle(fontSize: 11)),
+                        onTap: () => setState(() {
+                          _destinationController.text = stop.name;
+                          _suggestions = const [];
+                        }),
+                      ))
                   .toList(),
             ),
           ),
@@ -86,9 +87,9 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
           onPressed: _locating ? null : _fillCurrentLocation,
           icon: _locating
               ? const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2))
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2))
               : const Icon(Icons.my_location_rounded, size: 18),
           label: Text(_locating
               ? 'Finding your location…'
@@ -111,7 +112,12 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               '${_originController.text.trim()} → ${_destinationController.text.trim()}',
               style: const TextStyle(fontSize: 13, color: Color(0xFF9BA0C2))),
           const SizedBox(height: 12),
-          ...MockRoutes.options.map((r) => RouteCard(route: r)),
+          if (_routes.isEmpty)
+            const Text(
+                'No direct scheduled rail journey was found. Try an interchange station.',
+                style: TextStyle(fontSize: 13, color: Color(0xFF9BA0C2)))
+          else
+            ..._routes.map((r) => RouteCard(route: r)),
         ],
       ],
     );
@@ -126,7 +132,7 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
     if (!mounted) return;
     if (result.status == LocationStatus.available) {
       _originController.text =
-      'Current location (${result.position!.latitude.toStringAsFixed(4)}, ${result.position!.longitude.toStringAsFixed(4)})';
+          'Current location (${result.position!.latitude.toStringAsFixed(4)}, ${result.position!.longitude.toStringAsFixed(4)})';
     } else {
       _validationMessage = result.status == LocationStatus.disabled
           ? 'Turn on Location Services, or type your origin manually.'
@@ -135,7 +141,7 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
     setState(() => _locating = false);
   }
 
-  void _findRoutes() {
+  Future<void> _findRoutes() async {
     final origin = _originController.text.trim();
     final destination = _destinationController.text.trim();
     setState(() {
@@ -144,6 +150,10 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
           : null;
       _searched = origin.isNotEmpty && destination.isNotEmpty;
     });
+    if (!_searched) return;
+    final routes =
+        await TransitRepository.instance.planRoute(origin, destination);
+    if (mounted) setState(() => _routes = routes);
   }
 
   Future<void> _findSuggestions(String query) async {

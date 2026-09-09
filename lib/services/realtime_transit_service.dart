@@ -21,9 +21,9 @@ class RealtimeTransitService {
   static const _baseUrl =
       'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana';
 
-  /// [category] defaults to `rapid-rail-kl`, which covers LRT/MRT/monorail
-  /// vehicles. Pass `rapid-bus-kl` etc. to track buses instead.
-  Future<List<TransitVehicle>> fetchVehicles({String category = 'rapid-rail-kl'}) async {
+  /// Official live positions are currently available for Rapid Bus, not rail.
+  Future<List<TransitVehicle>> fetchVehicles(
+      {String category = 'rapid-bus-kl'}) async {
     final uri = Uri.parse('$_baseUrl?category=$category');
     final response = await http.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
@@ -34,7 +34,7 @@ class RealtimeTransitService {
     // FeedEntity.vehicle is field 4 (not 2 — field 2 is is_deleted, a
     // varint, which is why checking field.bytes on it was always null).
     for (final entity
-    in _fields(response.bodyBytes).where((field) => field.number == 4)) {
+        in _fields(response.bodyBytes).where((field) => field.number == 4)) {
       final vehicle = _parseVehicle(entity.bytes!, category);
       if (vehicle != null) vehicles.add(vehicle);
     }

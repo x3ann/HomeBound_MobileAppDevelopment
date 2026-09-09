@@ -14,7 +14,7 @@ import '../../shared/widgets/data_source_badge.dart';
 import 'widgets/stop_list_tile.dart';
 import 'widgets/stop_pin.dart';
 
-/// Shows the phone, nearby stops, and official GTFS-Realtime rail
+/// Shows the phone, nearby stops, and official GTFS-Realtime bus
 /// (LRT/MRT) vehicle positions. Location tracking starts automatically —
 /// no button tap required — so the map is centered on the user and stops
 /// are distance-sorted from the first frame.
@@ -65,32 +65,31 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _locationSubscription?.cancel();
     _locationSubscription =
         LocationService.instance.positionStream().listen((position) {
-          if (!mounted) return;
-          setState(() {
-            _userLocation = position;
-            _stops = TransitRepository.instance.sortByDistance(_stops, position);
-          });
-          _mapController.move(position, 14.5);
-        });
+      if (!mounted) return;
+      setState(() {
+        _userLocation = position;
+        _stops = TransitRepository.instance.sortByDistance(_stops, position);
+      });
+      _mapController.move(position, 14.5);
+    });
   }
 
   Future<void> _refreshVehicles() async {
     if (_loadingVehicles) return;
     setState(() => _loadingVehicles = true);
     try {
-      // rapid-rail-kl covers LRT/MRT/monorail vehicles.
       final vehicles = await RealtimeTransitService.instance
-          .fetchVehicles(category: 'rapid-rail-kl');
+          .fetchVehicles(category: 'rapid-bus-kl');
       if (!mounted) return;
       setState(() {
         _vehicles = vehicles;
         _liveMessage =
-        '${vehicles.length} live Rapid Rail vehicles · refreshed just now';
+            '${vehicles.length} live Rapid KL buses · refreshed just now';
       });
     } catch (_) {
       if (!mounted) return;
       setState(
-              () => _liveMessage = 'Live vehicle feed is temporarily unavailable.');
+          () => _liveMessage = 'Live vehicle feed is temporarily unavailable.');
     } finally {
       if (mounted) setState(() => _loadingVehicles = false);
     }
@@ -131,18 +130,18 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         child: TextField(
           controller: _searchController,
           decoration: InputDecoration(
-            hintText: 'Search a rail line or vehicle',
+            hintText: 'Search a bus route or vehicle',
             prefixIcon: const Icon(Icons.search_rounded),
             suffixIcon: _loadingVehicles
                 ? const Padding(
-                padding: EdgeInsets.all(12),
-                child: SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2)))
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2)))
                 : IconButton(
-                onPressed: _refreshVehicles,
-                icon: const Icon(Icons.refresh_rounded)),
+                    onPressed: _refreshVehicles,
+                    icon: const Icon(Icons.refresh_rounded)),
           ),
         ),
       ),
@@ -159,7 +158,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               children: [
                 TileLayer(
                     urlTemplate:
-                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                     userAgentPackageName: 'com.homebound.app'),
                 MarkerLayer(markers: [
                   ..._stops.map((stop) => Marker(
@@ -202,7 +201,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
               children:
-              _stops.map((stop) => StopListTile(stop: stop)).toList())),
+                  _stops.map((stop) => StopListTile(stop: stop)).toList())),
     ]);
   }
 
@@ -227,7 +226,7 @@ class _UserLocationPin extends StatelessWidget {
   Widget build(BuildContext context) => const Tooltip(
       message: 'Your current location',
       child:
-      Icon(Icons.my_location_rounded, color: Colors.blueAccent, size: 34));
+          Icon(Icons.my_location_rounded, color: Colors.blueAccent, size: 34));
 }
 
 class _VehiclePin extends StatelessWidget {

@@ -17,6 +17,7 @@ class Stop {
   final ServiceUrgency urgency;
   final String? gtfsStopId;
   final String lastService;
+  final String? liveRailEstimate;
 
   const Stop({
     required this.name,
@@ -26,6 +27,7 @@ class Stop {
     required this.urgency,
     this.gtfsStopId,
     this.lastService = '—',
+    this.liveRailEstimate,
   });
 
   Stop copyWith({
@@ -36,6 +38,7 @@ class Stop {
     ServiceUrgency? urgency,
     String? gtfsStopId,
     String? lastService,
+    String? liveRailEstimate,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -45,6 +48,7 @@ class Stop {
       urgency: urgency ?? this.urgency,
       gtfsStopId: gtfsStopId ?? this.gtfsStopId,
       lastService: lastService ?? this.lastService,
+      liveRailEstimate: liveRailEstimate ?? this.liveRailEstimate,
     );
   }
 
