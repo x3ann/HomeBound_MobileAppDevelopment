@@ -6,8 +6,7 @@ import '../modules/last_service_tracker/last_service_tracker_screen.dart';
 import '../modules/live_map/live_map_screen.dart';
 import '../modules/route_planner/route_planner_screen.dart';
 import '../modules/ai_delay_prediction/ai_delay_prediction_screen.dart';
-
-import 'placeholder_module_screen.dart';
+import '../modules/sos_panic/sos_panic_screen.dart';
 
 class DashboardShell extends StatefulWidget {
   const DashboardShell({super.key});
@@ -37,11 +36,7 @@ class _DashboardShellState extends State<DashboardShell> {
       const LiveMapScreen(),
       const RoutePlannerScreen(),
       const AiDelayPredictionScreen(),
-      const PlaceholderModuleScreen(
-        title: 'SOS Panic Button',
-        owner: 'Kaiser Tan King Sheng',
-        icon: Icons.sos_rounded,
-      ),
+      const SosPanicScreen(),
     ];
 
     final content = SafeArea(
