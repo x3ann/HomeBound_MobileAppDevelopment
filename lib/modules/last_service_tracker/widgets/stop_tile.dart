@@ -13,29 +13,51 @@ class StopTile extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(12)),
+      decoration: BoxDecoration(
+          color: AppColors.surface, borderRadius: BorderRadius.circular(12)),
       child: Row(
         children: [
-          Container(width: 8, height: 8, decoration: BoxDecoration(color: stop.urgency.color, shape: BoxShape.circle)),
+          Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                  color: stop.urgency.color, shape: BoxShape.circle)),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(stop.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                Text(stop.platform, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                Text(stop.name,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Text(
+                  stop.distanceMeters == null
+                      ? stop.platform
+                      : '${stop.platform} · ${_distance(stop.distanceMeters!)}',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppColors.textSecondary),
+                ),
               ],
             ),
           ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(stop.formattedCountdown, style: TextStyle(fontWeight: FontWeight.w700, color: stop.urgency.color, fontSize: 13)),
-              Text(stop.urgency.label, style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+              Text(stop.formattedCountdown,
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: stop.urgency.color,
+                      fontSize: 13)),
+              Text(stop.urgency.label,
+                  style: const TextStyle(
+                      fontSize: 10, color: AppColors.textSecondary)),
             ],
           ),
         ],
       ),
     );
   }
+
+  String _distance(double meters) => meters < 1000
+      ? '${meters.round()} m away'
+      : '${(meters / 1000).toStringAsFixed(1)} km away';
 }

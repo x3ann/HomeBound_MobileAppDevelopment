@@ -14,8 +14,8 @@ import '../../shared/widgets/data_source_badge.dart';
 import 'widgets/stop_list_tile.dart';
 import 'widgets/stop_pin.dart';
 
-/// Shows the phone, nearby stops, and official GTFS-Realtime bus
-/// (LRT/MRT) vehicle positions. Location tracking starts automatically —
+/// Shows the phone, nearby rail stops, and official GTFS-Realtime bus
+/// vehicle positions. Location tracking starts automatically —
 /// no button tap required — so the map is centered on the user and stops
 /// are distance-sorted from the first frame.
 class LiveMapScreen extends StatefulWidget {
@@ -30,15 +30,19 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   final _searchController = TextEditingController();
   StreamSubscription<LatLng>? _locationSubscription;
   Timer? _vehicleTimer;
+  Timer? _countdownTimer;
   bool _loading = true;
   bool _loadingVehicles = false;
   bool _mapReady = false;
-  List<Stop> _stops = MockData.nearbyStops;
+  List<Stop> _stops = const [];
   List<TransitVehicle> _vehicles = const [];
-  TransitDataSource _source = TransitDataSource.mock;
+  TransitDataSource _source = TransitDataSource.unavailable;
   LatLng? _userLocation;
   String _query = '';
   String? _liveMessage;
+  String? _locationMessage;
+  LocationStatus? _locationStatus;
+  DateTime? _lastVehicleUpdate;
 
   @override
   void initState() {
@@ -50,13 +54,28 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _refreshVehicles();
     _vehicleTimer =
         Timer.periodic(const Duration(seconds: 30), (_) => _refreshVehicles());
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _stops.isEmpty) return;
+      setState(() {
+        _stops = _stops
+            .map((stop) => stop.timeToDeparture > Duration.zero
+                ? stop.copyWith(
+                    timeToDeparture:
+                        stop.timeToDeparture - const Duration(seconds: 1))
+                : stop)
+            .toList();
+      });
+    });
   }
 
   Future<void> _load() async {
     final result = await TransitRepository.instance.getNearbyStops();
     if (!mounted) return;
+    final location = _userLocation;
     setState(() {
-      _stops = result.stops;
+      _stops = location == null
+          ? result.stops
+          : TransitRepository.instance.sortByDistance(result.stops, location);
       _source = result.source;
       _loading = false;
     });
@@ -64,17 +83,54 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   Future<void> _startLocationTracking() async {
     _locationSubscription?.cancel();
-    _locationSubscription =
-        LocationService.instance.positionStream().listen((position) {
-      if (!mounted) return;
+    final result = await LocationService.instance.requestCurrentLocation();
+    if (!mounted) return;
+    if (result.status != LocationStatus.available) {
       setState(() {
-        _userLocation = position;
-        _stops = TransitRepository.instance.sortByDistance(_stops, position);
+        _locationStatus = result.status;
+        _locationMessage = switch (result.status) {
+          LocationStatus.disabled =>
+            'Turn on Location Services to see nearby transport.',
+          LocationStatus.denied => 'Location permission was not granted.',
+          LocationStatus.deniedForever =>
+            'Location permission is blocked in phone settings.',
+          _ => 'Your current location could not be found.',
+        };
       });
-      if (_mapReady) {
-        _mapController.move(position, 14.5);
-      }
+      return;
+    }
+    _applyLocation(result.position!);
+    _locationSubscription = LocationService.instance.watchPosition().listen(
+      _applyLocation,
+      onError: (_) {
+        if (mounted) {
+          setState(() => _locationMessage =
+              'Live location updates paused. Tap retry to reconnect.');
+        }
+      },
+    );
+  }
+
+  void _applyLocation(LatLng position) {
+    if (!mounted) return;
+    setState(() {
+      _userLocation = position;
+      _locationStatus = LocationStatus.available;
+      _locationMessage = null;
+      _stops = TransitRepository.instance.sortByDistance(_stops, position);
     });
+    if (_mapReady) {
+      _mapController.move(position, 14.5);
+    }
+  }
+
+  Future<void> _resolveLocationIssue() async {
+    if (_locationStatus == LocationStatus.deniedForever) {
+      await LocationService.instance.openAppSettings();
+    } else if (_locationStatus == LocationStatus.disabled) {
+      await LocationService.instance.openLocationSettings();
+    }
+    await _startLocationTracking();
   }
 
   Future<void> _refreshVehicles() async {
@@ -86,8 +142,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       if (!mounted) return;
       setState(() {
         _vehicles = vehicles;
-        _liveMessage =
-            '${vehicles.length} live Rapid KL buses · refreshed just now';
+        _lastVehicleUpdate = DateTime.now();
+        _liveMessage = '${vehicles.length} live Rapid KL buses';
       });
     } catch (_) {
       if (!mounted) return;
@@ -102,6 +158,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   void dispose() {
     _locationSubscription?.cancel();
     _vehicleTimer?.cancel();
+    _countdownTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -114,8 +171,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     }
     // The nearest stop is index 0 once sortByDistance has run (or the
     // app's default order before a location fix arrives).
-    final center = _userLocation ?? _stops.first.position;
+    final center =
+        _userLocation ?? (_stops.isEmpty ? null : _stops.first.position);
     final shownVehicles = _matchingVehicles();
+    final shownStops = _matchingStops();
 
     return Column(children: [
       Padding(
@@ -129,12 +188,28 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           DataSourceBadge(source: _source),
         ]),
       ),
+      if (_locationMessage != null)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: Row(children: [
+            Expanded(
+              child: Text(_locationMessage!,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary)),
+            ),
+            TextButton(
+                onPressed: _resolveLocationIssue,
+                child: Text(_locationStatus == LocationStatus.deniedForever
+                    ? 'Settings'
+                    : 'Retry')),
+          ]),
+        ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: TextField(
           controller: _searchController,
           decoration: InputDecoration(
-            hintText: 'Search a bus route or vehicle',
+            hintText: 'Search a station, bus route, or vehicle',
             prefixIcon: const Icon(Icons.search_rounded),
             suffixIcon: _loadingVehicles
                 ? const Padding(
@@ -156,44 +231,46 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: FlutterMap(
-              mapController: _mapController,
-              options: MapOptions(
-                initialCenter: center,
-                initialZoom: 14,
-                onMapReady: () {
-                  _mapReady = true;
-                  final location = _userLocation;
-                  if (location != null) {
-                    _mapController.move(location, 14.5);
-                  }
-                },
-              ),
-              children: [
-                TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.homebound.app'),
-                MarkerLayer(markers: [
-                  ..._stops.map((stop) => Marker(
-                      point: stop.position,
-                      width: 40,
-                      height: 40,
-                      child: StopPin(stop: stop))),
-                  if (_userLocation != null)
-                    Marker(
-                        point: _userLocation!,
-                        width: 42,
-                        height: 42,
-                        child: const _UserLocationPin()),
-                  ...shownVehicles.map((vehicle) => Marker(
-                      point: vehicle.position,
-                      width: 42,
-                      height: 42,
-                      child: _VehiclePin(vehicle: vehicle))),
-                ]),
-              ],
-            ),
+            child: center == null
+                ? const Center(child: Text('Map data is unavailable'))
+                : FlutterMap(
+                    mapController: _mapController,
+                    options: MapOptions(
+                      initialCenter: center,
+                      initialZoom: 14,
+                      onMapReady: () {
+                        _mapReady = true;
+                        final location = _userLocation;
+                        if (location != null) {
+                          _mapController.move(location, 14.5);
+                        }
+                      },
+                    ),
+                    children: [
+                      TileLayer(
+                          urlTemplate:
+                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.homebound.app'),
+                      MarkerLayer(markers: [
+                        ...shownStops.map((stop) => Marker(
+                            point: stop.position,
+                            width: 40,
+                            height: 40,
+                            child: StopPin(stop: stop))),
+                        if (_userLocation != null)
+                          Marker(
+                              point: _userLocation!,
+                              width: 42,
+                              height: 42,
+                              child: const _UserLocationPin()),
+                        ...shownVehicles.map((vehicle) => Marker(
+                            point: vehicle.position,
+                            width: 42,
+                            height: 42,
+                            child: _VehiclePin(vehicle: vehicle))),
+                      ]),
+                    ],
+                  ),
           ),
         ),
       ),
@@ -204,7 +281,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           const Expanded(
               child: Text('Nearby stops',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700))),
-          Text('${shownVehicles.length} vehicles shown',
+          Text(
+              '${shownStops.length} stops · ${shownVehicles.length} vehicles${_lastVehicleUpdate == null ? '' : ' · ${_timeLabel(_lastVehicleUpdate!)}'}',
               style: const TextStyle(
                   fontSize: 11, color: AppColors.textSecondary)),
         ]),
@@ -214,8 +292,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           flex: 3,
           child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-              children:
-                  _stops.map((stop) => StopListTile(stop: stop)).toList())),
+              children: shownStops
+                  .map((stop) => StopListTile(
+                        stop: stop,
+                        onTap: () {
+                          if (_mapReady) _mapController.move(stop.position, 16);
+                        },
+                      ))
+                  .toList())),
     ]);
   }
 
@@ -229,8 +313,34 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       final isNearby = _userLocation == null ||
           distance.as(LengthUnit.Kilometer, _userLocation!, vehicle.position) <=
               8;
-      return matchesQuery && isNearby;
+      final isFresh =
+          DateTime.now().difference(vehicle.updatedAt).inMinutes <= 5;
+      return matchesQuery && isNearby && isFresh;
     }).toList();
+  }
+
+  List<Stop> _matchingStops() {
+    final query = _query.trim().toLowerCase();
+    final matches = _stops
+        .where((stop) {
+          final matchesQuery = query.isEmpty ||
+              stop.name.toLowerCase().contains(query) ||
+              stop.platform.toLowerCase().contains(query);
+          final isNearby = _userLocation == null ||
+              (stop.distanceMeters ?? double.infinity) <= 8000;
+          return matchesQuery && isNearby;
+        })
+        .take(25)
+        .toList();
+    if (matches.isEmpty && query.isEmpty) return _stops.take(25).toList();
+    return matches;
+  }
+
+  String _timeLabel(DateTime time) {
+    final local = time.toLocal();
+    final hour = local.hour % 12 == 0 ? 12 : local.hour % 12;
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute ${local.hour >= 12 ? 'PM' : 'AM'}';
   }
 }
 

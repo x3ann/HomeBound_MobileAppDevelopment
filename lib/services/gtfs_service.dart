@@ -16,6 +16,12 @@ import 'gtfs_models.dart';
 class GtfsService {
   static const _baseUrl = 'https://api.data.gov.my/gtfs-static/prasarana';
   static const _timeout = Duration(seconds: 20);
+  static final Map<String, Future<Archive>> _archiveCache = {};
+
+  /// Invalidates a downloaded feed so a manual refresh performs a new request.
+  static void clearCache({String category = 'rapid-rail-kl'}) {
+    _archiveCache.remove(category);
+  }
 
   /// Fetches and parses stops.txt for the given Prasarana category.
   /// Throws on any network/parse failure — callers should catch and fall
@@ -116,6 +122,45 @@ class GtfsService {
     return trips;
   }
 
+  /// Fetches repeating trip windows used by the rail feed to describe
+  /// frequent service without listing every departure as a separate trip.
+  static Future<List<GtfsFrequency>> fetchFrequencies(
+      {String category = 'rapid-rail-kl'}) async {
+    List<List<dynamic>> rows;
+    try {
+      rows =
+          await _fetchCsvFile(category: category, fileName: 'frequencies.txt');
+    } on FormatException {
+      return const [];
+    }
+    if (rows.isEmpty) return const [];
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final tripIdx = header.indexOf('trip_id');
+    final startIdx = header.indexOf('start_time');
+    final endIdx = header.indexOf('end_time');
+    final headwayIdx = header.indexOf('headway_secs');
+    if (tripIdx < 0 || startIdx < 0 || endIdx < 0 || headwayIdx < 0) {
+      throw const FormatException(
+          'frequencies.txt missing expected GTFS columns');
+    }
+    final frequencies = <GtfsFrequency>[];
+    for (final row in rows.skip(1)) {
+      final maxIdx = [tripIdx, startIdx, endIdx, headwayIdx]
+          .reduce((a, b) => a > b ? a : b);
+      if (row.length <= maxIdx) continue;
+      final headway = int.tryParse(row[headwayIdx].toString());
+      if (headway == null || headway <= 0) continue;
+      frequencies.add(GtfsFrequency(
+        tripId: row[tripIdx].toString(),
+        startTime: row[startIdx].toString().trim(),
+        endTime: row[endIdx].toString().trim(),
+        headwaySeconds: headway,
+      ));
+    }
+    return frequencies;
+  }
+
   /// Fetches and parses calendar.txt for the given Prasarana category.
   static Future<List<GtfsCalendarService>> fetchCalendar(
       {String category = 'rapid-rail-kl'}) async {
@@ -170,6 +215,43 @@ class GtfsService {
       ));
     }
     return services;
+  }
+
+  /// Fetches holiday and other service-day overrides. Some feeds omit this
+  /// optional GTFS file, in which case there are simply no overrides.
+  static Future<List<GtfsCalendarDate>> fetchCalendarDates(
+      {String category = 'rapid-rail-kl'}) async {
+    List<List<dynamic>> rows;
+    try {
+      rows = await _fetchCsvFile(
+          category: category, fileName: 'calendar_dates.txt');
+    } on FormatException {
+      return const [];
+    }
+    if (rows.isEmpty) return const [];
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final serviceIdx = header.indexOf('service_id');
+    final dateIdx = header.indexOf('date');
+    final exceptionIdx = header.indexOf('exception_type');
+    if (serviceIdx < 0 || dateIdx < 0 || exceptionIdx < 0) {
+      throw const FormatException(
+          'calendar_dates.txt missing expected GTFS columns');
+    }
+    final dates = <GtfsCalendarDate>[];
+    for (final row in rows.skip(1)) {
+      final maxIdx =
+          [serviceIdx, dateIdx, exceptionIdx].reduce((a, b) => a > b ? a : b);
+      if (row.length <= maxIdx) continue;
+      final exceptionType = int.tryParse(row[exceptionIdx].toString());
+      if (exceptionType != 1 && exceptionType != 2) continue;
+      dates.add(GtfsCalendarDate(
+        serviceId: row[serviceIdx].toString(),
+        date: row[dateIdx].toString(),
+        exceptionType: exceptionType!,
+      ));
+    }
+    return dates;
   }
 
   /// Fetches and parses stop_times.txt for the given Prasarana category.
@@ -244,15 +326,7 @@ class GtfsService {
     required String category,
     required String fileName,
   }) async {
-    final uri = Uri.parse('$_baseUrl?category=$category');
-    final response = await http.get(uri).timeout(_timeout);
-
-    if (response.statusCode != 200) {
-      throw http.ClientException(
-          'GTFS Static API returned ${response.statusCode}', uri);
-    }
-
-    final archive = ZipDecoder().decodeBytes(response.bodyBytes);
+    final archive = await _archiveFor(category);
     final file = archive.files.firstWhere(
       (f) => f.name.toLowerCase() == fileName.toLowerCase(),
       orElse: () => throw FormatException(
@@ -263,5 +337,22 @@ class GtfsService {
         utf8.decode(file.content as List<int>, allowMalformed: true);
     return const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
         .convert(content);
+  }
+
+  static Future<Archive> _archiveFor(String category) {
+    return _archiveCache.putIfAbsent(category, () async {
+      final uri = Uri.parse('$_baseUrl?category=$category');
+      try {
+        final response = await http.get(uri).timeout(_timeout);
+        if (response.statusCode != 200) {
+          throw http.ClientException(
+              'GTFS Static API returned ${response.statusCode}', uri);
+        }
+        return ZipDecoder().decodeBytes(response.bodyBytes);
+      } catch (_) {
+        _archiveCache.remove(category);
+        rethrow;
+      }
+    });
   }
 }

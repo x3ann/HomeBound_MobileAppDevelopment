@@ -10,11 +10,14 @@ class DataSourceBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool isLive =
-        source == TransitDataSource.live || source == TransitDataSource.cached;
-    final color = isLive ? AppColors.success : AppColors.textSecondary;
-    final label = isLive ? 'Live GTFS data' : 'Offline demo data';
-    final icon = isLive ? Icons.wifi_rounded : Icons.wifi_off_rounded;
+    final available = source != TransitDataSource.unavailable;
+    final color = available ? AppColors.success : AppColors.textSecondary;
+    final label = switch (source) {
+      TransitDataSource.official => 'Official schedule',
+      TransitDataSource.cached => 'Cached schedule',
+      TransitDataSource.unavailable => 'Schedule unavailable',
+    };
+    final icon = available ? Icons.cloud_done_rounded : Icons.cloud_off_rounded;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
