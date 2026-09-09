@@ -70,7 +70,8 @@ class TransitRepository {
       // most needs to still work.
       _cachedStops = MockData.nearbyStops;
       _lastSource = TransitDataSource.mock;
-      return TransitLookupResult(MockData.nearbyStops, TransitDataSource.mock);
+      return const TransitLookupResult(
+          MockData.nearbyStops, TransitDataSource.mock);
     }
   }
 
@@ -106,7 +107,7 @@ class TransitRepository {
         .toList();
   }
 
-  /// Finds direct, currently scheduled GTFS journeys between two rail stops.
+  /// Finds direct or one-interchange scheduled GTFS rail journeys.
   Future<List<RouteOption>> planRoute(
       String originName, String destinationName) async {
     await _ensureStationDirectory();
@@ -131,42 +132,130 @@ class TransitRepository {
     final nowSeconds = now.hour * 3600 + now.minute * 60 + now.second;
     final byTrip = <String, List<GtfsStopTime>>{};
     for (final time in _stopTimes!) {
-      if (_activeTripIds!.contains(time.tripId))
+      if (_activeTripIds!.contains(time.tripId)) {
         byTrip.putIfAbsent(time.tripId, () => []).add(time);
+      }
     }
     final routeByTrip = {for (final trip in _trips!) trip.tripId: trip.routeId};
     final results = <({int departure, RouteOption route})>[];
+    final outbound = <({
+      String stopId,
+      String tripId,
+      int departure,
+      int arrival,
+      String route
+    })>[];
+    final inboundByStop = <String,
+        List<({String tripId, int departure, int arrival, String route})>>{};
     for (final entry in byTrip.entries) {
       final times = entry.value
         ..sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
-      GtfsStopTime? from;
-      GtfsStopTime? to;
-      for (final time in times) {
-        if (from == null && time.stopId == origin.gtfsStopId) from = time;
-        if (from != null &&
-            time.stopId == destination.gtfsStopId &&
-            time.stopSequence > from.stopSequence) {
-          to = time;
-          break;
+      final fromIndex =
+          times.indexWhere((time) => time.stopId == origin.gtfsStopId);
+      final toIndex =
+          times.indexWhere((time) => time.stopId == destination.gtfsStopId);
+      final route = routeByTrip[entry.key] ?? 'service';
+      if (toIndex > 0) {
+        final arrival =
+            GtfsService.gtfsTimeToSeconds(times[toIndex].arrivalTime);
+        if (arrival != null) {
+          for (var i = 0; i < toIndex; i++) {
+            final transferDeparture =
+                GtfsService.gtfsTimeToSeconds(times[i].departureTime);
+            if (transferDeparture == null) continue;
+            for (final key in _transferKeys(times[i].stopId)) {
+              inboundByStop.putIfAbsent(key, () => []).add((
+                tripId: entry.key,
+                departure: transferDeparture,
+                arrival: arrival,
+                route: route,
+              ));
+            }
+          }
         }
       }
-      if (from == null || to == null) continue;
+      if (fromIndex < 0) continue;
+      final from = times[fromIndex];
       final depart = GtfsService.gtfsTimeToSeconds(from.departureTime);
-      final arrive = GtfsService.gtfsTimeToSeconds(to.arrivalTime);
-      if (depart == null || arrive == null || depart < nowSeconds) continue;
-      results.add((
-        departure: depart,
-        route: RouteOption(
-            departureTime: GtfsService.formatSecondsAsClock(depart),
-            mode: 'Rapid Rail · ${routeByTrip[entry.key] ?? 'service'}',
-            etaSummary:
-                'Arrives ${GtfsService.formatSecondsAsClock(arrive)} · ${(arrive - depart) ~/ 60} min',
-            confidence: 1,
-            status: ServiceUrgency.onTime),
-      ));
+      if (depart == null || depart < nowSeconds) continue;
+      if (toIndex > fromIndex) {
+        final arrive =
+            GtfsService.gtfsTimeToSeconds(times[toIndex].arrivalTime);
+        if (arrive != null) {
+          results.add(_routeResult(depart, arrive, 'Rapid Rail · $route'));
+        }
+      }
+      for (var i = fromIndex + 1; i < times.length; i++) {
+        final arrival = GtfsService.gtfsTimeToSeconds(times[i].arrivalTime);
+        if (arrival != null) {
+          outbound.add((
+            stopId: times[i].stopId,
+            tripId: entry.key,
+            departure: depart,
+            arrival: arrival,
+            route: route,
+          ));
+        }
+      }
+    }
+    for (final first in outbound) {
+      final candidates =
+          <({String tripId, int departure, int arrival, String route})>[];
+      for (final key in _transferKeys(first.stopId)) {
+        candidates.addAll(inboundByStop[key] ?? const []);
+      }
+      for (final second in candidates) {
+        final wait = second.departure - first.arrival;
+        if (first.tripId == second.tripId || wait < 60 || wait > 1800) continue;
+        results.add(_routeResult(
+          first.departure,
+          second.arrival,
+          'Rapid Rail · ${first.route} → ${second.route}',
+        ));
+      }
     }
     results.sort((a, b) => a.departure.compareTo(b.departure));
-    return results.take(3).map((result) => result.route).toList();
+    final unique = <String, RouteOption>{};
+    for (final result in results) {
+      final route = result.route;
+      unique.putIfAbsent(
+          '${route.departureTime}|${route.mode}|${route.etaSummary}',
+          () => route);
+    }
+    return unique.values.take(3).toList();
+  }
+
+  ({int departure, RouteOption route}) _routeResult(
+      int departure, int arrival, String mode) {
+    return (
+      departure: departure,
+      route: RouteOption(
+        departureTime: GtfsService.formatSecondsAsClock(departure),
+        mode: mode,
+        etaSummary:
+            'Arrives ${GtfsService.formatSecondsAsClock(arrival)} · ${(arrival - departure) ~/ 60} min',
+        confidence: 1,
+        status: ServiceUrgency.onTime,
+      ),
+    );
+  }
+
+  Iterable<String> _transferKeys(String stopId) sync* {
+    yield stopId;
+    Stop? stop;
+    for (final item in _stationDirectory ?? const <Stop>[]) {
+      if (item.gtfsStopId == stopId) {
+        stop = item;
+        break;
+      }
+    }
+    if (stop != null) {
+      yield stop.name
+          .toLowerCase()
+          .replaceAll(RegExp(r'\b(mrt|lrt|monorail|station|platform)\b'), '')
+          .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+          .trim();
+    }
   }
 
   Future<void> _ensureStationDirectory() async {

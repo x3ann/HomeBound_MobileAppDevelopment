@@ -23,6 +23,7 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   final _destinationController = TextEditingController();
   bool _searched = false;
   bool _locating = false;
+  bool _planning = false;
   String? _validationMessage;
   List<Stop> _suggestions = const [];
   int _searchVersion = 0;
@@ -103,8 +104,14 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
           ),
         const SizedBox(height: 14),
         ElevatedButton(
-          onPressed: _findRoutes,
-          child: const Text('Find Routes'),
+          onPressed: _planning ? null : _findRoutes,
+          child: _planning
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Find Routes'),
         ),
         const SizedBox(height: 22),
         if (_searched) ...[
@@ -112,9 +119,9 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               '${_originController.text.trim()} → ${_destinationController.text.trim()}',
               style: const TextStyle(fontSize: 13, color: Color(0xFF9BA0C2))),
           const SizedBox(height: 12),
-          if (_routes.isEmpty)
+          if (!_planning && _routes.isEmpty)
             const Text(
-                'No direct scheduled rail journey was found. Try an interchange station.',
+                'No scheduled rail journey was found for these stations today.',
                 style: TextStyle(fontSize: 13, color: Color(0xFF9BA0C2)))
           else
             ..._routes.map((r) => RouteCard(route: r)),
@@ -151,9 +158,22 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
       _searched = origin.isNotEmpty && destination.isNotEmpty;
     });
     if (!_searched) return;
-    final routes =
-        await TransitRepository.instance.planRoute(origin, destination);
-    if (mounted) setState(() => _routes = routes);
+    setState(() {
+      _planning = true;
+      _routes = const [];
+    });
+    try {
+      final routes =
+          await TransitRepository.instance.planRoute(origin, destination);
+      if (mounted) setState(() => _routes = routes);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _validationMessage =
+            'Route data is temporarily unavailable. Please try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _planning = false);
+    }
   }
 
   Future<void> _findSuggestions(String query) async {

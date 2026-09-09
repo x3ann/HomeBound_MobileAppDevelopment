@@ -12,12 +12,13 @@ class StatusChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: urgency.color.withOpacity(0.15),
+        color: urgency.color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
         urgency.label,
-        style: TextStyle(color: urgency.color, fontSize: 10, fontWeight: FontWeight.w700),
+        style: TextStyle(
+            color: urgency.color, fontSize: 10, fontWeight: FontWeight.w700),
       ),
     );
   }

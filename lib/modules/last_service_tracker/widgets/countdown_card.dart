@@ -29,7 +29,7 @@ class CountdownCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: urgency.color.withOpacity(0.4)),
+        border: Border.all(color: urgency.color.withValues(alpha: 0.4)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

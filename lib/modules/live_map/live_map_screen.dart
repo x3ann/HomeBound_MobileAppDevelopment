@@ -32,6 +32,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   Timer? _vehicleTimer;
   bool _loading = true;
   bool _loadingVehicles = false;
+  bool _mapReady = false;
   List<Stop> _stops = MockData.nearbyStops;
   List<TransitVehicle> _vehicles = const [];
   TransitDataSource _source = TransitDataSource.mock;
@@ -70,7 +71,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         _userLocation = position;
         _stops = TransitRepository.instance.sortByDistance(_stops, position);
       });
-      _mapController.move(position, 14.5);
+      if (_mapReady) {
+        _mapController.move(position, 14.5);
+      }
     });
   }
 
@@ -105,9 +108,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading)
+    if (_loading) {
       return const Center(
           child: CircularProgressIndicator(color: AppColors.gold));
+    }
     // The nearest stop is index 0 once sortByDistance has run (or the
     // app's default order before a location fix arrives).
     final center = _userLocation ?? _stops.first.position;
@@ -154,7 +158,17 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             borderRadius: BorderRadius.circular(18),
             child: FlutterMap(
               mapController: _mapController,
-              options: MapOptions(initialCenter: center, initialZoom: 14),
+              options: MapOptions(
+                initialCenter: center,
+                initialZoom: 14,
+                onMapReady: () {
+                  _mapReady = true;
+                  final location = _userLocation;
+                  if (location != null) {
+                    _mapController.move(location, 14.5);
+                  }
+                },
+              ),
               children: [
                 TileLayer(
                     urlTemplate:

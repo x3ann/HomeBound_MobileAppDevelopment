@@ -19,7 +19,7 @@ class StopPin extends StatelessWidget {
           border: Border.all(color: Colors.white, width: 2),
           boxShadow: [
             BoxShadow(
-              color: stop.urgency.color.withOpacity(0.6),
+              color: stop.urgency.color.withValues(alpha: 0.6),
               blurRadius: 8,
             ),
           ],

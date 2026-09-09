@@ -25,11 +25,16 @@ class PlaceholderModuleScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 48, color: accent.withOpacity(0.6)),
+            Icon(icon, size: 48, color: accent.withValues(alpha: 0.6)),
             const SizedBox(height: 16),
-            Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700), textAlign: TextAlign.center),
+            Text(title,
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                textAlign: TextAlign.center),
             const SizedBox(height: 6),
-            Text('Owned by $owner · in progress', style: const TextStyle(color: AppColors.textSecondary), textAlign: TextAlign.center),
+            Text('Owned by $owner · in progress',
+                style: const TextStyle(color: AppColors.textSecondary),
+                textAlign: TextAlign.center),
           ],
         ),
       ),

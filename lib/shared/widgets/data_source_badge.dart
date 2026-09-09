@@ -10,7 +10,8 @@ class DataSourceBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool isLive = source == TransitDataSource.live || source == TransitDataSource.cached;
+    final bool isLive =
+        source == TransitDataSource.live || source == TransitDataSource.cached;
     final color = isLive ? AppColors.success : AppColors.textSecondary;
     final label = isLive ? 'Live GTFS data' : 'Offline demo data';
     final icon = isLive ? Icons.wifi_rounded : Icons.wifi_off_rounded;
@@ -18,7 +19,7 @@ class DataSourceBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -26,7 +27,9 @@ class DataSourceBadge extends StatelessWidget {
         children: [
           Icon(icon, size: 12, color: color),
           const SizedBox(width: 4),
-          Text(label, style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600)),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 10, color: color, fontWeight: FontWeight.w600)),
         ],
       ),
     );

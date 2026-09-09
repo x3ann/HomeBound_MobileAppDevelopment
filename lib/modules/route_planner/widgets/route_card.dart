@@ -13,24 +13,40 @@ class RouteCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
+      decoration: BoxDecoration(
+          color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(route.departureTime, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+              Text(route.departureTime,
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w800)),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(color: route.status.color.withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
-                child: Text(route.status.label, style: TextStyle(color: route.status.color, fontSize: 10, fontWeight: FontWeight.w700)),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                    color: route.status.color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Text(route.status.label,
+                    style: TextStyle(
+                        color: route.status.color,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700)),
               ),
             ],
           ),
           const SizedBox(height: 4),
-          Text(route.mode, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary, letterSpacing: 0.5)),
-          Text(route.etaSummary, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+          Text(route.mode,
+              style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                  letterSpacing: 0.5)),
+          Text(route.etaSummary,
+              style: const TextStyle(
+                  fontSize: 13, color: AppColors.textSecondary)),
           const SizedBox(height: 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
@@ -42,7 +58,9 @@ class RouteCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          Text('${(route.confidence * 100).round()}% confidence', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+          Text('${(route.confidence * 100).round()}% confidence',
+              style: const TextStyle(
+                  fontSize: 11, color: AppColors.textSecondary)),
         ],
       ),
     );

@@ -49,10 +49,14 @@ class ExperimentalRailService {
   void _collectStrings(Object? value, List<String> output) {
     if (value is String) output.add(value);
     if (value is List) {
-      for (final item in value) _collectStrings(item, output);
+      for (final item in value) {
+        _collectStrings(item, output);
+      }
     }
     if (value is Map) {
-      for (final item in value.values) _collectStrings(item, output);
+      for (final item in value.values) {
+        _collectStrings(item, output);
+      }
     }
   }
 }
