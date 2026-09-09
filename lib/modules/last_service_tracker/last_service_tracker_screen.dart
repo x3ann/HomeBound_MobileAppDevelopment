@@ -15,11 +15,10 @@ import 'widgets/stat_tile.dart';
 import 'widgets/stop_tile.dart';
 
 /// MODULE: Last Service Tracker (Chung Wei Xean)
-/// Loads stops from TransitRepository (live GTFS Static feed from
-/// api.data.gov.my, falling back to mock data automatically), then wires
-/// the live countdown timer into the widgets in ./widgets/. Edit those
-/// files to change how individual pieces look; edit this file to change
-/// layout, data loading, or behaviour.
+/// Loads stops from TransitRepository (live GTFS feed from
+/// api.data.gov.my, falling back to mock data automatically), then asks
+/// for the device's location automatically on open so nearby stops and
+/// the "nearest stop" countdown are correct from the first frame.
 class LastServiceTrackerScreen extends StatefulWidget {
   final VoidCallback? onOpenLiveMap;
 
@@ -68,6 +67,11 @@ class _LastServiceTrackerScreenState
     });
 
     _startCountdown();
+
+    // Ask for location automatically once stops are loaded, so the
+    // "nearest stop" is based on where the person actually is, not just
+    // the app's default ordering.
+    _useCurrentLocation();
   }
 
   void _startCountdown() {
@@ -115,6 +119,8 @@ class _LastServiceTrackerScreenState
         _locating = false;
       });
 
+      _startCountdown();
+
       return;
     }
 
@@ -149,8 +155,9 @@ class _LastServiceTrackerScreenState
     super.dispose();
   }
 
-  Stop get _nearestStop =>
-      _stops.length > 1 ? _stops[1] : _stops.first;
+  // The nearest stop is always index 0 — TransitRepository.sortByDistance
+  // sorts ascending by distance, so the first element is the closest.
+  Stop get _nearestStop => _stops.first;
 
   ServiceUrgency get _urgency {
     if (_remaining.inMinutes <= 5) {
@@ -194,7 +201,10 @@ class _LastServiceTrackerScreenState
         setState(() {
           _stops = result.stops;
           _source = result.source;
+          _remaining = _nearestStop.timeToDeparture;
         });
+
+        _startCountdown();
       },
       child: ListView(
         padding: const EdgeInsets.fromLTRB(
@@ -266,7 +276,7 @@ class _LastServiceTrackerScreenState
             label: Text(
               _locating
                   ? 'Finding your location…'
-                  : 'Use my current location',
+                  : 'Refresh my current location',
             ),
           ),
 
