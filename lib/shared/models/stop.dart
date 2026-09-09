@@ -4,11 +4,11 @@ import '../theme/app_theme.dart';
 
 /// A transit stop/station shown on the Last Service Tracker and Live Map.
 ///
-/// `position`, `name` and `gtfsStopId` can come from the live GTFS Static
-/// feed (see TransitRepository); `timeToDeparture` and `urgency` are
-/// simulated — the GTFS Static feed only has schedules, not which trip is
-/// realistically "last" tonight, so that part stays mocked until the AI
-/// Delay Prediction module (Kaiser) or a full stop_times.txt pass covers it.
+/// `position`, `name`, `gtfsStopId`, `timeToDeparture`, `urgency` and
+/// `lastService` are populated from the live GTFS Static feed
+/// (stops.txt + stop_times.txt + trips.txt + calendar.txt) by
+/// TransitRepository whenever a stop is successfully matched to the feed.
+/// If the feed is unavailable, stops fall back to the mock values below.
 class Stop {
   final String name;
   final String platform;
@@ -16,6 +16,7 @@ class Stop {
   final Duration timeToDeparture;
   final ServiceUrgency urgency;
   final String? gtfsStopId;
+  final String lastService;
 
   const Stop({
     required this.name,
@@ -24,6 +25,7 @@ class Stop {
     required this.timeToDeparture,
     required this.urgency,
     this.gtfsStopId,
+    this.lastService = '—',
   });
 
   Stop copyWith({
@@ -33,6 +35,7 @@ class Stop {
     Duration? timeToDeparture,
     ServiceUrgency? urgency,
     String? gtfsStopId,
+    String? lastService,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -41,6 +44,7 @@ class Stop {
       timeToDeparture: timeToDeparture ?? this.timeToDeparture,
       urgency: urgency ?? this.urgency,
       gtfsStopId: gtfsStopId ?? this.gtfsStopId,
+      lastService: lastService ?? this.lastService,
     );
   }
 
@@ -51,9 +55,10 @@ class Stop {
   }
 }
 
-/// Mock dataset standing in for the real-time feed described in the
-/// proposal (RapidKL disruption + last-service data). Swap this out for
-/// an actual API/service layer later.
+/// Mock dataset used only as an offline fallback when the live GTFS feed
+/// (stops/schedules) can't be reached. TransitRepository overwrites the
+/// countdown/urgency/lastService fields with real schedule data whenever
+/// a stop successfully matches the live feed.
 class MockData {
   static final List<Stop> nearbyStops = [
     Stop(
@@ -62,6 +67,7 @@ class MockData {
       position: const LatLng(3.1424, 101.6959),
       timeToDeparture: const Duration(minutes: 6, seconds: 11),
       urgency: ServiceUrgency.critical,
+      lastService: '11:58 PM',
     ),
     Stop(
       name: 'KL Sentral',
@@ -69,6 +75,7 @@ class MockData {
       position: const LatLng(3.1341, 101.6866),
       timeToDeparture: const Duration(minutes: 18, seconds: 42),
       urgency: ServiceUrgency.closingSoon,
+      lastService: '11:58 PM',
     ),
     Stop(
       name: 'Masjid Jamek',
@@ -76,8 +83,7 @@ class MockData {
       position: const LatLng(3.1488, 101.6956),
       timeToDeparture: const Duration(minutes: 34),
       urgency: ServiceUrgency.onTime,
+      lastService: '11:58 PM',
     ),
   ];
-
-  static const String lastTrainTonight = '11:58 PM';
 }
