@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homebound/services/transit_repository.dart';
+import 'package:homebound/services/gtfs_service.dart';
 import 'package:homebound/shared/models/stop.dart';
 import 'package:homebound/shared/theme/app_theme.dart';
 import 'package:latlong2/latlong.dart';
@@ -42,5 +43,22 @@ void main() {
     );
 
     expect(stop.formattedCountdown, 'No more today');
+  });
+
+  test('after-midnight service remains on the previous GTFS day', () {
+    final afterMidnight = DateTime(2026, 9, 10, 1, 30);
+
+    expect(
+      GtfsService.serviceDateFor(afterMidnight),
+      DateTime(2026, 9, 9),
+    );
+    expect(GtfsService.secondsIntoServiceDay(afterMidnight), 25 * 3600 + 1800);
+  });
+
+  test('morning service uses the current GTFS day', () {
+    final morning = DateTime(2026, 9, 10, 6, 15);
+
+    expect(GtfsService.serviceDateFor(morning), DateTime(2026, 9, 10));
+    expect(GtfsService.secondsIntoServiceDay(morning), 6 * 3600 + 900);
   });
 }

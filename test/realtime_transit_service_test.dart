@@ -5,7 +5,10 @@ import 'package:homebound/services/realtime_transit_service.dart';
 
 void main() {
   test('decodes VehiclePosition nested inside FeedEntity', () {
-    final trip = _lengthField(5, 'KJ01'.codeUnits);
+    final trip = [
+      ..._lengthField(1, 'trip-7'.codeUnits),
+      ..._lengthField(5, 'KJ01'.codeUnits),
+    ];
     final position = [
       ..._fixed32Field(1, 3.1390),
       ..._fixed32Field(2, 101.6869),
@@ -14,6 +17,8 @@ void main() {
     final vehicle = [
       ..._lengthField(1, trip),
       ..._lengthField(2, position),
+      ..._varintField(3, 12),
+      ..._lengthField(4, 'STOP-12'.codeUnits),
       ..._varintField(6, 1700000000),
       ..._lengthField(8, descriptor),
     ];
@@ -28,6 +33,9 @@ void main() {
     expect(result, hasLength(1));
     expect(result.single.id, 'BUS-42');
     expect(result.single.routeLabel, 'Rapid KL KJ01');
+    expect(result.single.tripId, 'trip-7');
+    expect(result.single.currentStopSequence, 12);
+    expect(result.single.stopId, 'STOP-12');
     expect(result.single.position.latitude, closeTo(3.1390, 0.0001));
     expect(result.single.position.longitude, closeTo(101.6869, 0.0001));
   });
