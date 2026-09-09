@@ -18,12 +18,43 @@ class GtfsRoute {
   final String routeId;
   final String shortName;
   final String longName;
+  final int? routeType;
 
   const GtfsRoute({
     required this.routeId,
     required this.shortName,
     required this.longName,
+    this.routeType,
   });
+
+  String get displayName =>
+      shortName.trim().isNotEmpty ? shortName.trim() : longName.trim();
+
+  String get modeLabel {
+    final text = '$shortName $longName'.toUpperCase();
+    if (text.contains('BRT')) return 'BRT';
+    if (routeType == 3 || text.contains('BUS')) return 'Bus';
+    if (routeType == 12 || text.contains('MONORAIL') || text.contains('MRL')) {
+      return 'Monorail';
+    }
+    if (text.contains('MRT') ||
+        text.contains('KAJANG') ||
+        text.contains('PUTRAJAYA') ||
+        text.contains('KGL') ||
+        text.contains('PYL')) {
+      return 'MRT';
+    }
+    if (text.contains('LRT') ||
+        text.contains('KELANA') ||
+        text.contains('AMPANG') ||
+        text.contains('SRI PETALING') ||
+        text.contains('KJL') ||
+        text.contains('AGL') ||
+        text.contains('SPL')) {
+      return 'LRT';
+    }
+    return routeType == 1 ? 'Metro' : 'Rail';
+  }
 }
 
 /// A single row from GTFS `stop_times.txt` — one scheduled visit of a

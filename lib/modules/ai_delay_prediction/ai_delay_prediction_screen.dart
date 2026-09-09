@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/delay_prediction_service.dart';
 import '../../services/transit_repository.dart';
@@ -289,8 +290,14 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
             children: [
               Expanded(child: _metric('Weather', result.weatherSummary)),
               const SizedBox(width: 10),
-              Expanded(child: _metric('Service', result.serviceSummary)),
+              Expanded(
+                  child: _metric('Estimated arrival', result.estimatedArrival)),
             ],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _metric('Route availability', result.serviceSummary),
           ),
         ],
       ),
@@ -354,6 +361,15 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
             Text('Updated ${_formatTime(result.calculatedAt)}',
                 style: const TextStyle(
                     color: AppColors.textSecondary, fontSize: 11)),
+            const SizedBox(height: 4),
+            TextButton.icon(
+              onPressed: () => launchUrl(
+                Uri.parse('https://open-meteo.com/'),
+                mode: LaunchMode.externalApplication,
+              ),
+              icon: const Icon(Icons.open_in_new_rounded, size: 14),
+              label: const Text('Weather data by Open-Meteo'),
+            ),
           ],
         ),
       );

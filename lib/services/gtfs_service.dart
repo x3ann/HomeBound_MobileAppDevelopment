@@ -72,6 +72,7 @@ class GtfsService {
     final idIdx = header.indexOf('route_id');
     final shortIdx = header.indexOf('route_short_name');
     final longIdx = header.indexOf('route_long_name');
+    final typeIdx = header.indexOf('route_type');
     if (idIdx < 0) {
       throw const FormatException('routes.txt missing route_id column');
     }
@@ -88,6 +89,9 @@ class GtfsService {
             : '',
         longName:
             longIdx >= 0 && row.length > longIdx ? row[longIdx].toString() : '',
+        routeType: typeIdx >= 0 && row.length > typeIdx
+            ? int.tryParse(row[typeIdx].toString())
+            : null,
       ));
     }
     return routes;

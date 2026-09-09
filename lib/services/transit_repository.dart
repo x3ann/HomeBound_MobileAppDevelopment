@@ -52,8 +52,9 @@ class TransitRepository {
 
   /// Complete official rail-station directory used by selectors and search.
   Future<List<Stop>> getStationDirectory() async {
+    if (_cachedStops == null) await getNearbyStops();
     await _ensureStationDirectory();
-    return List<Stop>.unmodifiable(_stationDirectory!);
+    return List<Stop>.unmodifiable(_cachedStops ?? _stationDirectory!);
   }
 
   Future<TransitLookupResult> getNearbyStops(
@@ -87,6 +88,7 @@ class TransitRepository {
           .toList();
       merged = await _withRealSchedule(merged);
       _cachedStops = merged;
+      _stationDirectory = merged;
       _lastSource = TransitDataSource.official;
       return TransitLookupResult(merged, TransitDataSource.official);
     } catch (_) {
@@ -106,6 +108,7 @@ class TransitRepository {
     try {
       final updated = await _withRealSchedule(_cachedStops!);
       _cachedStops = updated;
+      _stationDirectory = updated;
       return TransitLookupResult(updated, TransitDataSource.cached);
     } catch (_) {
       return TransitLookupResult(_cachedStops!, TransitDataSource.cached);
@@ -192,6 +195,7 @@ class TransitRepository {
 
   /// Official station directory for origin and destination autocomplete.
   Future<List<Stop>> searchStops(String query) async {
+    if (_cachedStops == null) await getNearbyStops();
     await _ensureStationDirectory();
     final needle = query.trim().toLowerCase();
     if (needle.isEmpty) return const [];
@@ -371,7 +375,7 @@ class TransitRepository {
           '${route.departureTime}|${route.mode}|${route.etaSummary}',
           () => route);
     }
-    return unique.values.take(3).toList();
+    return rankRoutes(unique.values);
   }
 
   List<RouteOption> _scanNetworkRoutes(
@@ -495,6 +499,10 @@ class TransitRepository {
         status: ServiceUrgency.onTime,
         steps: [...result.steps, 'Arrive at $destinationName'],
         transferCount: math.max(0, result.rides - 1),
+        arrivalTime: GtfsService.formatSecondsAsClock(result.time),
+        totalMinutes: (result.time - result.departure) ~/ 60,
+        departureServiceSeconds: result.departure,
+        arrivalServiceSeconds: result.time,
       ));
     }
     final unique = <String, RouteOption>{};
@@ -503,7 +511,28 @@ class TransitRepository {
           '${option.departureTime}|${option.mode}|${option.etaSummary}',
           () => option);
     }
-    return unique.values.take(3).toList();
+    return rankRoutes(unique.values);
+  }
+
+  /// Ranks alternatives by earliest arrival, with a small transfer penalty.
+  static List<RouteOption> rankRoutes(Iterable<RouteOption> routes) {
+    final ranked = routes.toList()
+      ..sort((a, b) {
+        final aArrival =
+            a.arrivalServiceSeconds == 0 ? 1 << 30 : a.arrivalServiceSeconds;
+        final bArrival =
+            b.arrivalServiceSeconds == 0 ? 1 << 30 : b.arrivalServiceSeconds;
+        final aScore = aArrival + a.transferCount * 60;
+        final bScore = bArrival + b.transferCount * 60;
+        return aScore.compareTo(bScore);
+      });
+    return ranked
+        .take(3)
+        .toList()
+        .asMap()
+        .entries
+        .map((entry) => entry.value.copyWith(isRecommended: entry.key == 0))
+        .toList();
   }
 
   Map<String, List<_WalkingConnection>> _walkingConnections(
@@ -569,6 +598,10 @@ class TransitRepository {
         etaSummary:
             'Arrives ${GtfsService.formatSecondsAsClock(arrival)} · ${(arrival - departure) ~/ 60} min',
         status: ServiceUrgency.onTime,
+        arrivalTime: GtfsService.formatSecondsAsClock(arrival),
+        totalMinutes: (arrival - departure) ~/ 60,
+        departureServiceSeconds: departure,
+        arrivalServiceSeconds: arrival,
       ),
     );
   }
@@ -627,13 +660,31 @@ class TransitRepository {
     final now = DateTime.now();
     final nowSeconds = GtfsService.secondsIntoServiceDay(now);
 
+    final routesById = {
+      for (final route in _routes ?? const <GtfsRoute>[]) route.routeId: route,
+    };
+    final routeByTrip = {
+      for (final trip in _trips ?? const <GtfsTrip>[])
+        trip.tripId: routesById[trip.routeId],
+    };
     final timesByStop = <String, List<int>>{};
-    for (final instance in _tripInstances().values) {
-      for (final st in instance) {
+    final modesByStop = <String, Set<String>>{};
+    final labelsByStop = <String, Set<String>>{};
+    for (final entry in _tripInstances().entries) {
+      final route = routeByTrip[entry.key.split('#').first];
+      for (final st in entry.value) {
         final seconds = GtfsService.gtfsTimeToSeconds(st.departureTime) ??
             GtfsService.gtfsTimeToSeconds(st.arrivalTime);
         if (seconds == null) continue;
         timesByStop.putIfAbsent(st.stopId, () => []).add(seconds);
+        if (route != null) {
+          modesByStop.putIfAbsent(st.stopId, () => {}).add(route.modeLabel);
+          if (route.displayName.isNotEmpty) {
+            labelsByStop
+                .putIfAbsent(st.stopId, () => {})
+                .add(route.displayName);
+          }
+        }
       }
     }
 
@@ -641,35 +692,80 @@ class TransitRepository {
       final gtfsId = stop.gtfsStopId;
       if (gtfsId == null) return stop;
       final times = timesByStop[gtfsId];
-      if (times == null || times.isEmpty) return stop;
-      times.sort();
-
-      final upcoming = times.where((t) => t > nowSeconds);
-      final lastServiceLabel = GtfsService.formatSecondsAsClock(times.last);
-
-      if (upcoming.isEmpty) {
-        // Every scheduled departure for today has already passed.
+      final modes = (modesByStop[gtfsId] ?? {'Rail'}).toList()..sort();
+      final labels = (labelsByStop[gtfsId] ?? const <String>{}).toList()
+        ..sort();
+      final modeLabel = modes.join(' / ');
+      final routeLabel = labels.take(3).join(' · ');
+      if (times == null || times.isEmpty) {
         return stop.copyWith(
-          timeToDeparture: Duration.zero,
-          urgency: ServiceUrgency.critical,
-          lastService: lastServiceLabel,
+          platform: '$modeLabel station',
+          transportMode: modeLabel,
+          routeLabel: routeLabel,
+          hasDepartureData: false,
+          isOperating: false,
         );
       }
-
-      final nextSeconds = upcoming.first;
-      final remaining = Duration(seconds: nextSeconds - nowSeconds);
-      final urgency = remaining.inMinutes <= 5
-          ? ServiceUrgency.critical
-          : remaining.inMinutes <= 20
-              ? ServiceUrgency.closingSoon
-              : ServiceUrgency.onTime;
-
-      return stop.copyWith(
-        timeToDeparture: remaining,
-        urgency: urgency,
-        lastService: lastServiceLabel,
+      return applyScheduleWindow(
+        stop: stop,
+        departureSeconds: times,
+        nowSeconds: nowSeconds,
+        modeLabel: modeLabel,
+        routeLabel: routeLabel,
       );
     }).toList();
+  }
+
+  /// Applies a published first/last-service window to a stop. Kept public and
+  /// deterministic so early-morning and after-last-service behavior is tested.
+  static Stop applyScheduleWindow({
+    required Stop stop,
+    required List<int> departureSeconds,
+    required int nowSeconds,
+    required String modeLabel,
+    String routeLabel = '',
+  }) {
+    final times = [...departureSeconds]..sort();
+    if (times.isEmpty) {
+      return stop.copyWith(
+        platform: '$modeLabel station',
+        transportMode: modeLabel,
+        routeLabel: routeLabel,
+        hasDepartureData: false,
+        isOperating: false,
+      );
+    }
+    final upcoming = times.where((time) => time > nowSeconds);
+    final lastServiceLabel = GtfsService.formatSecondsAsClock(times.last);
+    final isOperating = nowSeconds >= times.first && nowSeconds < times.last;
+    if (!isOperating || upcoming.isEmpty) {
+      return stop.copyWith(
+        platform: '$modeLabel station',
+        timeToDeparture: Duration.zero,
+        urgency: ServiceUrgency.critical,
+        lastService: lastServiceLabel,
+        transportMode: modeLabel,
+        routeLabel: routeLabel,
+        hasDepartureData: true,
+        isOperating: false,
+      );
+    }
+    final remaining = Duration(seconds: upcoming.first - nowSeconds);
+    final urgency = remaining.inMinutes <= 5
+        ? ServiceUrgency.critical
+        : remaining.inMinutes <= 20
+            ? ServiceUrgency.closingSoon
+            : ServiceUrgency.onTime;
+    return stop.copyWith(
+      platform: '$modeLabel station',
+      timeToDeparture: remaining,
+      urgency: urgency,
+      lastService: lastServiceLabel,
+      transportMode: modeLabel,
+      routeLabel: routeLabel,
+      hasDepartureData: true,
+      isOperating: true,
+    );
   }
 
   Future<void> _ensureScheduleLoaded() async {

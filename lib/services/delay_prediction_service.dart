@@ -120,6 +120,13 @@ class DelayPredictionService {
       serviceSummary: routes.isEmpty
           ? 'No route found'
           : '${routes.length} scheduled option${routes.length == 1 ? '' : 's'} found',
+      estimatedArrival: routes.isEmpty
+          ? 'Unavailable'
+          : (routes.first.arrivalTime.isNotEmpty
+              ? (delayMinutes == 0
+                  ? routes.first.arrivalTime
+                  : '${routes.first.arrivalTime} + up to $delayMinutes min')
+              : routes.first.etaSummary),
       factors: factors,
       sourceSummary: weather.isLive
           ? 'Official GTFS schedule + current Open-Meteo weather'

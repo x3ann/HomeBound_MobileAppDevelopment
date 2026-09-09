@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/emergency_contact_service.dart';
@@ -25,6 +28,7 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
   bool _isGettingLocation = false;
   bool _isSavingContact = false;
   String? _contactError;
+  Timer? _safetyLocationTimer;
 
   @override
   void initState() {
@@ -43,11 +47,13 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
 
   @override
   void dispose() {
+    _safetyLocationTimer?.cancel();
     _contactController.dispose();
     super.dispose();
   }
 
-  Future<void> _getCurrentLocation() async {
+  Future<void> _getCurrentLocation({bool quiet = false}) async {
+    if (_isGettingLocation) return;
     setState(() => _isGettingLocation = true);
     final result = await _locationService.requestCurrentLocation();
     if (!mounted) return;
@@ -57,15 +63,21 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
     });
     switch (result.status) {
       case LocationStatus.disabled:
-        _showMessage('Enable location services to attach your position.');
+        if (!quiet) {
+          _showMessage('Enable location services to attach your position.');
+        }
       case LocationStatus.denied:
-        _showMessage('Location permission was denied.');
+        if (!quiet) _showMessage('Location permission was denied.');
       case LocationStatus.deniedForever:
-        _showMessage('Enable location permission in device settings.');
+        if (!quiet) {
+          _showMessage('Enable location permission in device settings.');
+        }
       case LocationStatus.unavailable:
-        _showMessage('A current or last known location was not available.');
+        if (!quiet) {
+          _showMessage('A current or last known location was not available.');
+        }
       case LocationStatus.available:
-        if (result.isLastKnown) {
+        if (result.isLastKnown && !quiet) {
           _showMessage('Using the last known location; it may be outdated.');
         }
     }
@@ -96,38 +108,51 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
   }
 
   Future<void> _activateSos() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Activate emergency mode?'),
-        content: const Text(
-          'This prepares the emergency actions but does not place a call or send a message automatically.',
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Activate')),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
+    if (_isSosActive) return;
+    await HapticFeedback.heavyImpact();
+    if (!mounted) return;
     setState(() => _isSosActive = true);
     await _getCurrentLocation();
+    _safetyLocationTimer?.cancel();
+    _safetyLocationTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _getCurrentLocation(quiet: true),
+    );
   }
 
   Future<void> _callEmergencyServices() async {
+    await _callNumber(_emergencyNumber, 'emergency services');
+  }
+
+  Future<void> _callSavedContact() async {
+    final contact = _contactController.text;
+    if (!EmergencyContactService.isValid(contact)) {
+      setState(() => _contactError = 'Enter a valid emergency contact first.');
+      _showMessage('Enter and save a valid emergency contact.');
+      return;
+    }
+    await _callNumber(
+      EmergencyContactService.normalize(contact),
+      'emergency contact',
+    );
+  }
+
+  Future<void> _callNumber(String number, String label) async {
     try {
       final launched = await launchUrl(
-        Uri(scheme: 'tel', path: _emergencyNumber),
+        Uri(scheme: 'tel', path: number),
         mode: LaunchMode.externalApplication,
       );
-      if (!launched) _showMessage('Unable to open the phone dialer.');
+      if (!launched) _showMessage('Unable to call $label.');
     } catch (_) {
       _showMessage('Unable to open the phone dialer on this device.');
     }
+  }
+
+  void _cancelEmergencyMode() {
+    _safetyLocationTimer?.cancel();
+    setState(() => _isSosActive = false);
+    _showMessage('Emergency mode cancelled.');
   }
 
   Future<void> _prepareEmergencyMessage() async {
@@ -184,8 +209,8 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
             const SizedBox(height: 12),
             Text(
               _isSosActive
-                  ? 'MODE ACTIVE — NO ALERT SENT YET'
-                  : 'Tap in an emergency',
+                  ? 'ACTIVE · LOCATION REFRESHES EVERY 5 SECONDS'
+                  : 'PRESS AND HOLD TO ACTIVATE',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color:
@@ -203,7 +228,7 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
             if (_isSosActive) ...[
               const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: () => setState(() => _isSosActive = false),
+                onPressed: _cancelEmergencyMode,
                 icon: const Icon(Icons.close_rounded),
                 label: const Text('Cancel Emergency Mode'),
               ),
@@ -245,31 +270,38 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
         ),
       );
 
-  Widget _sosButton() => GestureDetector(
-        onTap: _isSosActive ? null : _activateSos,
-        child: Container(
-          width: 180,
-          height: 180,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: AppColors.critical.withValues(alpha: .15),
-            border: Border.all(
-                color: AppColors.critical.withValues(alpha: .4), width: 12),
-          ),
-          padding: const EdgeInsets.all(12),
+  Widget _sosButton() => Semantics(
+        button: true,
+        label: _isSosActive
+            ? 'Emergency mode active'
+            : 'Press and hold to activate emergency mode',
+        onLongPress: _isSosActive ? null : _activateSos,
+        child: GestureDetector(
+          onLongPress: _isSosActive ? null : _activateSos,
           child: Container(
-            decoration: const BoxDecoration(
-                shape: BoxShape.circle, color: AppColors.critical),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.sos_rounded, size: 54, color: Colors.white),
-                Text(_isSosActive ? 'READY' : 'SOS',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900)),
-              ],
+            width: 180,
+            height: 180,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.critical.withValues(alpha: .15),
+              border: Border.all(
+                  color: AppColors.critical.withValues(alpha: .4), width: 12),
+            ),
+            padding: const EdgeInsets.all(12),
+            child: Container(
+              decoration: const BoxDecoration(
+                  shape: BoxShape.circle, color: AppColors.critical),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.sos_rounded, size: 54, color: Colors.white),
+                  Text(_isSosActive ? 'READY' : 'SOS',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900)),
+                ],
+              ),
             ),
           ),
         ),
@@ -344,7 +376,7 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
               keyboardType: TextInputType.phone,
               autofillHints: const [AutofillHints.telephoneNumber],
               onChanged: (_) {
-                if (_contactError != null) setState(() => _contactError = null);
+                setState(() => _contactError = null);
               },
               decoration: InputDecoration(
                 hintText: 'Example: 0123456789',
@@ -368,6 +400,12 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
             onPressed: _callEmergencyServices,
             icon: const Icon(Icons.phone_rounded),
             label: const Text('Open Dialer ($_emergencyNumber)'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _callSavedContact,
+            icon: const Icon(Icons.contact_phone_rounded),
+            label: const Text('Call Saved Emergency Contact'),
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(

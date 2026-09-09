@@ -47,7 +47,7 @@ class StopTile extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                       color: stop.urgency.color,
                       fontSize: 13)),
-              Text(stop.urgency.label,
+              Text(stop.serviceStatusLabel,
                   style: const TextStyle(
                       fontSize: 10, color: AppColors.textSecondary)),
             ],
