@@ -8,70 +8,87 @@ import '../shared/models/transit_vehicle.dart';
 /// Reads RapidKL's official GTFS-Realtime vehicle-position feed. The feed is
 /// protobuf rather than JSON; this deliberately decodes only the fields used
 /// here (vehicle id, route id, latitude, longitude, and timestamp).
+///
+/// Field numbers below follow the standard gtfs-realtime.proto:
+///   FeedEntity: id=1, is_deleted=2, trip_update=3, vehicle=4, alert=5
+///   VehiclePosition: trip=1, position=2, current_stop_sequence=3,
+///                    stop_id=4, current_status=5, timestamp=6,
+///                    congestion_level=7, vehicle(descriptor)=8
 class RealtimeTransitService {
   RealtimeTransitService._();
   static final instance = RealtimeTransitService._();
 
-  static const _url =
-      'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-kl';
+  static const _baseUrl =
+      'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana';
 
-  Future<List<TransitVehicle>> fetchVehicles() async {
-    final response =
-        await http.get(Uri.parse(_url)).timeout(const Duration(seconds: 15));
+  /// [category] defaults to `rapid-rail-kl`, which covers LRT/MRT/monorail
+  /// vehicles. Pass `rapid-bus-kl` etc. to track buses instead.
+  Future<List<TransitVehicle>> fetchVehicles({String category = 'rapid-rail-kl'}) async {
+    final uri = Uri.parse('$_baseUrl?category=$category');
+    final response = await http.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw http.ClientException(
           'Realtime API returned ${response.statusCode}');
     }
     final vehicles = <TransitVehicle>[];
+    // FeedEntity.vehicle is field 4 (not 2 — field 2 is is_deleted, a
+    // varint, which is why checking field.bytes on it was always null).
     for (final entity
-        in _fields(response.bodyBytes).where((field) => field.number == 2)) {
-      final vehicle = _parseVehicle(entity.bytes!);
+    in _fields(response.bodyBytes).where((field) => field.number == 4)) {
+      final vehicle = _parseVehicle(entity.bytes!, category);
       if (vehicle != null) vehicles.add(vehicle);
     }
     return vehicles;
   }
 
-  TransitVehicle? _parseVehicle(Uint8List entity) {
+  TransitVehicle? _parseVehicle(Uint8List entity, String category) {
     Uint8List? vehicleMessage;
-    String entityId = '';
-    for (final field in _fields(entity)) {
-      if (field.number == 1 && field.bytes != null)
-        entityId = String.fromCharCodes(field.bytes!);
-      if (field.number == 2 && field.bytes != null)
-        vehicleMessage = field.bytes;
-    }
-    if (vehicleMessage == null) return null;
+    // entity here is already the VehiclePosition message payload (we
+    // matched FeedEntity.vehicle above), so parse it directly.
+    vehicleMessage = entity;
+
     String route = '';
-    String vehicleId = entityId;
+    String vehicleId = '';
     double? latitude;
     double? longitude;
     int timestamp = 0;
     for (final field in _fields(vehicleMessage)) {
       if (field.number == 1 && field.bytes != null) {
+        // TripDescriptor: route_id is field 5.
         for (final trip in _fields(field.bytes!)) {
-          if (trip.number == 5 && trip.bytes != null)
+          if (trip.number == 5 && trip.bytes != null) {
             route = String.fromCharCodes(trip.bytes!);
+          }
         }
       } else if (field.number == 2 && field.bytes != null) {
+        // Position: latitude=1 (fixed32), longitude=2 (fixed32).
         for (final point in _fields(field.bytes!)) {
-          if (point.number == 1 && point.fixed32 != null)
+          if (point.number == 1 && point.fixed32 != null) {
             latitude = _float(point.fixed32!);
-          if (point.number == 2 && point.fixed32 != null)
+          }
+          if (point.number == 2 && point.fixed32 != null) {
             longitude = _float(point.fixed32!);
+          }
         }
-      } else if (field.number == 3 && field.bytes != null) {
+      } else if (field.number == 8 && field.bytes != null) {
+        // VehicleDescriptor is field 8 (not 3 — field 3 is
+        // current_stop_sequence, a varint).
         for (final descriptor in _fields(field.bytes!)) {
-          if (descriptor.number == 1 && descriptor.bytes != null)
+          if (descriptor.number == 1 && descriptor.bytes != null) {
             vehicleId = String.fromCharCodes(descriptor.bytes!);
+          }
         }
-      } else if (field.number == 5 && field.value != null) {
+      } else if (field.number == 6 && field.value != null) {
         timestamp = field.value!;
       }
     }
     if (latitude == null || longitude == null) return null;
+    final isRail = category.contains('rail');
     return TransitVehicle(
       id: vehicleId.isEmpty ? 'Vehicle' : vehicleId,
-      routeLabel: route.isEmpty ? 'Rapid KL bus' : 'Rapid KL $route',
+      routeLabel: route.isEmpty
+          ? (isRail ? 'Rapid Rail service' : 'Rapid KL bus')
+          : (isRail ? 'Rapid Rail $route' : 'Rapid KL $route'),
       position: LatLng(latitude, longitude),
       updatedAt: timestamp > 0
           ? DateTime.fromMillisecondsSinceEpoch(timestamp * 1000)

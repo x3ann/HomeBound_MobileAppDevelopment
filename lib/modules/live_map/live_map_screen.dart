@@ -14,7 +14,10 @@ import '../../shared/widgets/data_source_badge.dart';
 import 'widgets/stop_list_tile.dart';
 import 'widgets/stop_pin.dart';
 
-/// Shows the phone, nearby stops, and official GTFS-Realtime bus positions.
+/// Shows the phone, nearby stops, and official GTFS-Realtime rail
+/// (LRT/MRT) vehicle positions. Location tracking starts automatically —
+/// no button tap required — so the map is centered on the user and stops
+/// are distance-sorted from the first frame.
 class LiveMapScreen extends StatefulWidget {
   const LiveMapScreen({super.key});
 
@@ -62,30 +65,32 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _locationSubscription?.cancel();
     _locationSubscription =
         LocationService.instance.positionStream().listen((position) {
-      if (!mounted) return;
-      setState(() {
-        _userLocation = position;
-        _stops = TransitRepository.instance.sortByDistance(_stops, position);
-      });
-      _mapController.move(position, 14.5);
-    });
+          if (!mounted) return;
+          setState(() {
+            _userLocation = position;
+            _stops = TransitRepository.instance.sortByDistance(_stops, position);
+          });
+          _mapController.move(position, 14.5);
+        });
   }
 
   Future<void> _refreshVehicles() async {
     if (_loadingVehicles) return;
     setState(() => _loadingVehicles = true);
     try {
-      final vehicles = await RealtimeTransitService.instance.fetchVehicles();
+      // rapid-rail-kl covers LRT/MRT/monorail vehicles.
+      final vehicles = await RealtimeTransitService.instance
+          .fetchVehicles(category: 'rapid-rail-kl');
       if (!mounted) return;
       setState(() {
         _vehicles = vehicles;
         _liveMessage =
-            '${vehicles.length} live Rapid KL buses · refreshed just now';
+        '${vehicles.length} live Rapid Rail vehicles · refreshed just now';
       });
     } catch (_) {
       if (!mounted) return;
       setState(
-          () => _liveMessage = 'Live vehicle feed is temporarily unavailable.');
+              () => _liveMessage = 'Live vehicle feed is temporarily unavailable.');
     } finally {
       if (mounted) setState(() => _loadingVehicles = false);
     }
@@ -104,8 +109,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (_loading)
       return const Center(
           child: CircularProgressIndicator(color: AppColors.gold));
-    final center = _userLocation ??
-        (_stops.length > 1 ? _stops[1].position : _stops.first.position);
+    // The nearest stop is index 0 once sortByDistance has run (or the
+    // app's default order before a location fix arrives).
+    final center = _userLocation ?? _stops.first.position;
     final shownVehicles = _matchingVehicles();
 
     return Column(children: [
@@ -125,18 +131,18 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         child: TextField(
           controller: _searchController,
           decoration: InputDecoration(
-            hintText: 'Search a bus route or vehicle',
+            hintText: 'Search a rail line or vehicle',
             prefixIcon: const Icon(Icons.search_rounded),
             suffixIcon: _loadingVehicles
                 ? const Padding(
-                    padding: EdgeInsets.all(12),
-                    child: SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2)))
+                padding: EdgeInsets.all(12),
+                child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2)))
                 : IconButton(
-                    onPressed: _refreshVehicles,
-                    icon: const Icon(Icons.refresh_rounded)),
+                onPressed: _refreshVehicles,
+                icon: const Icon(Icons.refresh_rounded)),
           ),
         ),
       ),
@@ -153,7 +159,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               children: [
                 TileLayer(
                     urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                     userAgentPackageName: 'com.homebound.app'),
                 MarkerLayer(markers: [
                   ..._stops.map((stop) => Marker(
@@ -185,7 +191,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           const Expanded(
               child: Text('Nearby stops',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700))),
-          Text('${shownVehicles.length} buses shown',
+          Text('${shownVehicles.length} vehicles shown',
               style: const TextStyle(
                   fontSize: 11, color: AppColors.textSecondary)),
         ]),
@@ -196,7 +202,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
               children:
-                  _stops.map((stop) => StopListTile(stop: stop)).toList())),
+              _stops.map((stop) => StopListTile(stop: stop)).toList())),
     ]);
   }
 
@@ -221,7 +227,7 @@ class _UserLocationPin extends StatelessWidget {
   Widget build(BuildContext context) => const Tooltip(
       message: 'Your current location',
       child:
-          Icon(Icons.my_location_rounded, color: Colors.blueAccent, size: 34));
+      Icon(Icons.my_location_rounded, color: Colors.blueAccent, size: 34));
 }
 
 class _VehiclePin extends StatelessWidget {
@@ -230,6 +236,6 @@ class _VehiclePin extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Tooltip(
       message: '${vehicle.routeLabel}\nVehicle ${vehicle.id}',
-      child: const Icon(Icons.directions_bus_rounded,
+      child: const Icon(Icons.directions_transit_rounded,
           color: AppColors.gold, size: 32));
 }

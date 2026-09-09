@@ -31,10 +31,22 @@ class LocationService {
       return const LocationResult(LocationStatus.deniedForever);
     }
     try {
-      final position = await Geolocator.getCurrentPosition();
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
       return LocationResult(LocationStatus.available,
           LatLng(position.latitude, position.longitude));
     } catch (_) {
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null) {
+        return LocationResult(
+          LocationStatus.available,
+          LatLng(lastKnown.latitude, lastKnown.longitude),
+        );
+      }
       return const LocationResult(LocationStatus.unavailable);
     }
   }
