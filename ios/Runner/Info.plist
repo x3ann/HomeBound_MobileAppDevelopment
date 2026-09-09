@@ -26,10 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Homebound uses your location to show nearby public transport stops, plan trips, and prepare an emergency location message.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Homebound uses your location to show nearby public transport stops and plan your trip.</string>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 		<key>UISceneConfigurations</key>

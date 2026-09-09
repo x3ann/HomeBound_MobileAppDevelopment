@@ -22,6 +22,7 @@ dependencies:
   geolocator: ^13.0.2
   url_launcher: ^6.3.2
   cloud_firestore: ^6.9.0
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

@@ -50,6 +50,12 @@ class TransitRepository {
 
   TransitDataSource get lastSource => _lastSource;
 
+  /// Complete official rail-station directory used by selectors and search.
+  Future<List<Stop>> getStationDirectory() async {
+    await _ensureStationDirectory();
+    return List<Stop>.unmodifiable(_stationDirectory!);
+  }
+
   Future<TransitLookupResult> getNearbyStops(
       {bool forceRefresh = false}) async {
     if (_cachedStops != null && !forceRefresh) {
@@ -599,8 +605,12 @@ class TransitRepository {
                 gtfsStopId: stop.stopId,
               ))
           .toList();
+      _lastSource = TransitDataSource.official;
     } catch (_) {
       _stationDirectory = _cachedStops ?? const [];
+      _lastSource = _stationDirectory!.isEmpty
+          ? TransitDataSource.unavailable
+          : TransitDataSource.cached;
     }
   }
 
