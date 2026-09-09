@@ -10,8 +10,7 @@ class LocationResult {
   const LocationResult(this.status, [this.position]);
 }
 
-/// Requests location only after an explicit user action, so the app never
-/// surprises people with a permission dialog on launch.
+/// Handles the permission, current-position, and continuous-position flows.
 class LocationService {
   LocationService._();
   static final instance = LocationService._();
@@ -66,4 +65,16 @@ class LocationService {
       yield LatLng(position.latitude, position.longitude);
     }
   }
+
+  /// Watches location after permission has already been checked.
+  Stream<LatLng> watchPosition() => Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 15,
+        ),
+      ).map((position) => LatLng(position.latitude, position.longitude));
+
+  Future<bool> openAppSettings() => Geolocator.openAppSettings();
+
+  Future<bool> openLocationSettings() => Geolocator.openLocationSettings();
 }

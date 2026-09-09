@@ -59,14 +59,27 @@ class GtfsTrip {
   });
 }
 
+/// A repeating service window from GTFS `frequencies.txt`.
+class GtfsFrequency {
+  final String tripId;
+  final String startTime;
+  final String endTime;
+  final int headwaySeconds;
+
+  const GtfsFrequency({
+    required this.tripId,
+    required this.startTime,
+    required this.endTime,
+    required this.headwaySeconds,
+  });
+}
+
 /// A single row from GTFS `calendar.txt` — which days of the week a
 /// `service_id` runs, and the date range it's valid for. Used to filter
 /// `trips.txt` down to only the trips actually running *today*, so "next
 /// departure" and "last service" reflect today's real schedule instead of
 /// every trip ever defined for the route.
 ///
-/// Note: this does not read `calendar_dates.txt` exceptions (holiday
-/// add/remove days), so schedules on exception dates may be slightly off.
 class GtfsCalendarService {
   final String serviceId;
   final bool monday;
@@ -90,5 +103,19 @@ class GtfsCalendarService {
     required this.sunday,
     required this.startDate,
     required this.endDate,
+  });
+}
+
+/// A service-day override from GTFS `calendar_dates.txt`.
+/// `exceptionType` is 1 when service is added and 2 when it is removed.
+class GtfsCalendarDate {
+  final String serviceId;
+  final String date;
+  final int exceptionType;
+
+  const GtfsCalendarDate({
+    required this.serviceId,
+    required this.date,
+    required this.exceptionType,
   });
 }

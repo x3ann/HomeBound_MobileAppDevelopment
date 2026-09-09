@@ -16,7 +16,7 @@ import 'widgets/stop_tile.dart';
 
 /// MODULE: Last Service Tracker (Chung Wei Xean)
 /// Loads stops from TransitRepository (live GTFS feed from
-/// api.data.gov.my, falling back to mock data automatically), then asks
+/// api.data.gov.my), then asks
 /// for the device's location automatically on open so nearby stops and
 /// the "nearest stop" countdown are correct from the first frame.
 class LastServiceTrackerScreen extends StatefulWidget {
@@ -37,10 +37,11 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
 
   bool _loading = true;
   bool _locating = false;
+  bool _refreshingExpired = false;
 
-  List<Stop> _stops = MockData.nearbyStops;
+  List<Stop> _stops = const [];
 
-  TransitDataSource _source = TransitDataSource.mock;
+  TransitDataSource _source = TransitDataSource.unavailable;
 
   Duration _remaining = Duration.zero;
 
@@ -60,11 +61,12 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
     setState(() {
       _stops = result.stops;
       _source = result.source;
-      _remaining = _nearestStop.timeToDeparture;
+      _remaining =
+          _stops.isEmpty ? Duration.zero : _nearestStop.timeToDeparture;
       _loading = false;
     });
 
-    _startCountdown();
+    if (_stops.isNotEmpty && _remaining > Duration.zero) _startCountdown();
 
     // Ask for location automatically once stops are loaded, so the
     // "nearest stop" is based on where the person actually is, not just
@@ -80,15 +82,34 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
       (_) {
         if (!mounted) return;
 
-        setState(() {
-          if (_remaining.inSeconds > 0) {
-            _remaining -= const Duration(seconds: 1);
-          } else {
-            _timer?.cancel();
-          }
-        });
+        if (_remaining.inSeconds > 0) {
+          setState(() => _remaining -= const Duration(seconds: 1));
+        } else {
+          _timer?.cancel();
+          _refreshExpiredSchedule();
+        }
       },
     );
+  }
+
+  Future<void> _refreshExpiredSchedule() async {
+    if (_refreshingExpired) return;
+    _refreshingExpired = true;
+    final result = await TransitRepository.instance.getNearbyStops(
+      forceRefresh: true,
+    );
+    if (!mounted) return;
+    setState(() {
+      _stops = result.stops;
+      _source = result.source;
+      _remaining =
+          _stops.isEmpty ? Duration.zero : _nearestStop.timeToDeparture;
+    });
+    _refreshingExpired = false;
+    if (_stops.isNotEmpty) {
+      if (_remaining > Duration.zero) _startCountdown();
+      await _useCurrentLocation();
+    }
   }
 
   Future<void> _useCurrentLocation() async {
@@ -102,24 +123,32 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
     if (!mounted) return;
 
     if (location.status == LocationStatus.available) {
+      final ordered = TransitRepository.instance.sortByDistance(
+        _stops,
+        location.position!,
+      );
+      final withinEightKm = ordered
+          .where((stop) => (stop.distanceMeters ?? double.infinity) <= 8000)
+          .take(8)
+          .toList();
       setState(() {
-        _stops = TransitRepository.instance.sortByDistance(
-          _stops,
-          location.position!,
-        );
-
-        _remaining = _nearestStop.timeToDeparture;
+        _stops =
+            withinEightKm.isNotEmpty ? withinEightKm : ordered.take(8).toList();
+        _remaining =
+            _stops.isEmpty ? Duration.zero : _nearestStop.timeToDeparture;
 
         _locationMessage = 'Stops are ordered by distance from your location.';
 
         _locating = false;
       });
 
-      _startCountdown();
+      if (_remaining > Duration.zero) _startCountdown();
 
-      final estimated = await TransitRepository.instance
-          .withExperimentalEstimate(_nearestStop);
-      if (mounted) setState(() => _stops[0] = estimated);
+      if (_stops.isNotEmpty) {
+        final estimated = await TransitRepository.instance
+            .withExperimentalEstimate(_nearestStop);
+        if (mounted) setState(() => _stops[0] = estimated);
+      }
 
       return;
     }
@@ -171,12 +200,47 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
     return ServiceUrgency.onTime;
   }
 
+  String _formatRemaining(Duration duration) {
+    if (duration <= Duration.zero) return 'No more today';
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    return hours > 0
+        ? '${hours}h ${minutes}m'
+        : '${minutes}m ${seconds.toString().padLeft(2, '0')}s';
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
       return const Center(
         child: CircularProgressIndicator(
           color: AppColors.gold,
+        ),
+      );
+    }
+
+    if (_stops.isEmpty) {
+      return RefreshIndicator(
+        color: AppColors.gold,
+        onRefresh: _refreshExpiredSchedule,
+        child: ListView(
+          padding: const EdgeInsets.all(24),
+          children: [
+            const SizedBox(height: 80),
+            const Icon(Icons.cloud_off_rounded,
+                size: 48, color: AppColors.textSecondary),
+            const SizedBox(height: 16),
+            const Text('Official transit data is unavailable',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            const Text('Check your connection and pull down to try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.textSecondary)),
+            const SizedBox(height: 16),
+            DataSourceBadge(source: _source),
+          ],
         ),
       );
     }
@@ -190,21 +254,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
     return RefreshIndicator(
       color: AppColors.gold,
       backgroundColor: AppColors.surface,
-      onRefresh: () async {
-        final result = await TransitRepository.instance.getNearbyStops(
-          forceRefresh: true,
-        );
-
-        if (!mounted) return;
-
-        setState(() {
-          _stops = result.stops;
-          _source = result.source;
-          _remaining = _nearestStop.timeToDeparture;
-        });
-
-        _startCountdown();
-      },
+      onRefresh: _refreshExpiredSchedule,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(
           20,
@@ -294,21 +344,21 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
             onTap: widget.onOpenLiveMap,
           ),
           const SizedBox(height: 16),
-          const Row(
+          Row(
             children: [
               Expanded(
                 child: StatTile(
-                  label: 'Next Bus',
-                  value: '11:52',
-                  caption: 'Rapid KL 780',
+                  label: 'Next departure',
+                  value: _formatRemaining(_remaining),
+                  caption: _nearestStop.name,
                 ),
               ),
-              SizedBox(width: 12),
+              const SizedBox(width: 12),
               Expanded(
                 child: StatTile(
-                  label: 'Delay Risk',
-                  value: '68%',
-                  caption: 'AI prediction',
+                  label: 'Last service',
+                  value: _nearestStop.lastService,
+                  caption: 'Official timetable',
                 ),
               ),
             ],

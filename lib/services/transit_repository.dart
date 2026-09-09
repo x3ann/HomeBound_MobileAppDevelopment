@@ -8,7 +8,7 @@ import 'experimental_rail_service.dart';
 
 /// Where the currently-displayed stop data came from. Surfaced in the UI
 /// (small badge) so it's honest about whether a session is live or offline.
-enum TransitDataSource { live, cached, mock }
+enum TransitDataSource { official, cached, unavailable }
 
 class TransitLookupResult {
   final List<Stop> stops;
@@ -19,26 +19,30 @@ class TransitLookupResult {
 /// Single source of truth for "what stops should the app show right now".
 ///
 /// Tries the real GTFS Static API (api.data.gov.my, no key required) first.
-/// On success, real station names/coordinates from the feed are merged
-/// into our known stop list by fuzzy name match, and — new — real
-/// schedule data (stop_times.txt + trips.txt + calendar.txt, filtered to
-/// today's active services) is used to compute an actual "next departure"
-/// countdown and "last service" time per stop.
+/// On success, station names and coordinates come directly from the feed.
+/// Stop times, repeating frequency windows, trips, calendars, and service-day
+/// exceptions are combined to calculate today's next departure and last
+/// service for every station.
 ///
-/// On any failure (offline, feed down, rate-limited, unexpected format),
-/// this silently falls back to MockData so the app never breaks a demo.
+/// On a refresh failure, the last successfully loaded in-memory schedule is
+/// retained. If no schedule has loaded yet, the UI receives an empty result
+/// and presents an explicit retry state instead of fabricated transit data.
 class TransitRepository {
   TransitRepository._();
   static final TransitRepository instance = TransitRepository._();
 
   List<Stop>? _cachedStops;
   List<Stop>? _stationDirectory;
-  TransitDataSource _lastSource = TransitDataSource.mock;
+  TransitDataSource _lastSource = TransitDataSource.unavailable;
 
   List<GtfsStopTime>? _stopTimes;
   List<GtfsTrip>? _trips;
   List<GtfsCalendarService>? _calendar;
+  List<GtfsCalendarDate>? _calendarDates;
+  List<GtfsRoute>? _routes;
+  List<GtfsFrequency>? _frequencies;
   Set<String>? _activeTripIds;
+  String? _activeDate;
 
   TransitDataSource get lastSource => _lastSource;
 
@@ -46,6 +50,18 @@ class TransitRepository {
       {bool forceRefresh = false}) async {
     if (_cachedStops != null && !forceRefresh) {
       return TransitLookupResult(_cachedStops!, TransitDataSource.cached);
+    }
+
+    if (forceRefresh) {
+      GtfsService.clearCache();
+      _stopTimes = null;
+      _trips = null;
+      _calendar = null;
+      _calendarDates = null;
+      _routes = null;
+      _frequencies = null;
+      _activeTripIds = null;
+      _activeDate = null;
     }
 
     try {
@@ -61,17 +77,15 @@ class TransitRepository {
           .toList();
       merged = await _withRealSchedule(merged);
       _cachedStops = merged;
-      _lastSource = TransitDataSource.live;
-      return TransitLookupResult(merged, TransitDataSource.live);
+      _lastSource = TransitDataSource.official;
+      return TransitLookupResult(merged, TransitDataSource.official);
     } catch (_) {
-      // Network unavailable, feed changed shape, rate limited, etc.
-      // Fall back to mock data rather than showing an error screen — last-
-      // service info during a genuine outage is exactly when this app
-      // most needs to still work.
-      _cachedStops = MockData.nearbyStops;
-      _lastSource = TransitDataSource.mock;
-      return const TransitLookupResult(
-          MockData.nearbyStops, TransitDataSource.mock);
+      if (_cachedStops != null) {
+        _lastSource = TransitDataSource.cached;
+        return TransitLookupResult(_cachedStops!, TransitDataSource.cached);
+      }
+      _lastSource = TransitDataSource.unavailable;
+      return const TransitLookupResult([], TransitDataSource.unavailable);
     }
   }
 
@@ -79,10 +93,13 @@ class TransitRepository {
   /// The distance is calculated locally, so this still works with cached data.
   List<Stop> sortByDistance(List<Stop> stops, LatLng userLocation) {
     const distance = Distance();
-    final ordered = [...stops];
-    ordered.sort((a, b) => distance
-        .as(LengthUnit.Meter, userLocation, a.position)
-        .compareTo(distance.as(LengthUnit.Meter, userLocation, b.position)));
+    final ordered = stops
+        .map((stop) => stop.copyWith(
+              distanceMeters:
+                  distance.as(LengthUnit.Meter, userLocation, stop.position),
+            ))
+        .toList();
+    ordered.sort((a, b) => a.distanceMeters!.compareTo(b.distanceMeters!));
     return ordered;
   }
 
@@ -95,16 +112,22 @@ class TransitRepository {
         : stop.copyWith(liveRailEstimate: estimate.text);
   }
 
-  /// Station directory for destination autocomplete. It contains the actual
-  /// GTFS station names where online, with the app's known stops as fallback.
+  /// Official station directory for origin and destination autocomplete.
   Future<List<Stop>> searchStops(String query) async {
     await _ensureStationDirectory();
     final needle = query.trim().toLowerCase();
     if (needle.isEmpty) return const [];
-    return _stationDirectory!
+    final matches = _stationDirectory!
         .where((stop) => stop.name.toLowerCase().contains(needle))
-        .take(6)
         .toList();
+    matches.sort((a, b) {
+      final aName = a.name.toLowerCase();
+      final bName = b.name.toLowerCase();
+      final aRank = aName == needle ? 0 : (aName.startsWith(needle) ? 1 : 2);
+      final bRank = bName == needle ? 0 : (bName.startsWith(needle) ? 1 : 2);
+      return aRank != bRank ? aRank.compareTo(bRank) : aName.compareTo(bName);
+    });
+    return matches.take(6).toList();
   }
 
   /// Finds direct or one-interchange scheduled GTFS rail journeys.
@@ -126,17 +149,24 @@ class TransitRepository {
     final destinations = await searchStops(destinationName);
     if (origins.isEmpty || destinations.isEmpty) return const [];
     await _ensureScheduleLoaded();
-    final origin = origins.first;
-    final destination = destinations.first;
+    final originIds =
+        origins.map((stop) => stop.gtfsStopId).whereType<String>().toSet();
+    final destinationIds =
+        destinations.map((stop) => stop.gtfsStopId).whereType<String>().toSet();
+    if (originIds.isEmpty || destinationIds.isEmpty) return const [];
     final now = DateTime.now();
     final nowSeconds = now.hour * 3600 + now.minute * 60 + now.second;
-    final byTrip = <String, List<GtfsStopTime>>{};
-    for (final time in _stopTimes!) {
-      if (_activeTripIds!.contains(time.tripId)) {
-        byTrip.putIfAbsent(time.tripId, () => []).add(time);
-      }
-    }
-    final routeByTrip = {for (final trip in _trips!) trip.tripId: trip.routeId};
+    final byTrip = _tripInstances();
+    final routeNames = {
+      for (final route in _routes!)
+        route.routeId: route.shortName.trim().isNotEmpty
+            ? route.shortName.trim()
+            : route.longName.trim()
+    };
+    final routeByTrip = {
+      for (final trip in _trips!)
+        trip.tripId: routeNames[trip.routeId] ?? trip.routeId
+    };
     final results = <({int departure, RouteOption route})>[];
     final outbound = <({
       String stopId,
@@ -151,10 +181,11 @@ class TransitRepository {
       final times = entry.value
         ..sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
       final fromIndex =
-          times.indexWhere((time) => time.stopId == origin.gtfsStopId);
+          times.indexWhere((time) => originIds.contains(time.stopId));
       final toIndex =
-          times.indexWhere((time) => time.stopId == destination.gtfsStopId);
-      final route = routeByTrip[entry.key] ?? 'service';
+          times.indexWhere((time) => destinationIds.contains(time.stopId));
+      final originalTripId = entry.key.split('#').first;
+      final route = routeByTrip[originalTripId] ?? 'service';
       if (toIndex > 0) {
         final arrival =
             GtfsService.gtfsTimeToSeconds(times[toIndex].arrivalTime);
@@ -234,7 +265,6 @@ class TransitRepository {
         mode: mode,
         etaSummary:
             'Arrives ${GtfsService.formatSecondsAsClock(arrival)} · ${(arrival - departure) ~/ 60} min',
-        confidence: 1,
         status: ServiceUrgency.onTime,
       ),
     );
@@ -273,16 +303,12 @@ class TransitRepository {
               ))
           .toList();
     } catch (_) {
-      _stationDirectory = MockData.nearbyStops;
+      _stationDirectory = _cachedStops ?? const [];
     }
   }
 
-  /// Loads stop_times/trips/calendar once (lazily) and rewrites each
-  /// stop's timeToDeparture/urgency/lastService using the *real* schedule
-  /// for today, for any stop that matched a live gtfsStopId. Stops that
-  /// didn't match keep their mock schedule. Any failure here is silent —
-  /// the app still has valid station names/positions from stops.txt even
-  /// if the heavier schedule files can't be loaded.
+  /// Loads the schedule once and calculates each station's next departure,
+  /// urgency, and last service for today's active service IDs.
   Future<List<Stop>> _withRealSchedule(List<Stop> stops) async {
     try {
       await _ensureScheduleLoaded();
@@ -295,12 +321,13 @@ class TransitRepository {
     final nowSeconds = now.hour * 3600 + now.minute * 60 + now.second;
 
     final timesByStop = <String, List<int>>{};
-    for (final st in _stopTimes!) {
-      if (!_activeTripIds!.contains(st.tripId)) continue;
-      final seconds = GtfsService.gtfsTimeToSeconds(st.departureTime) ??
-          GtfsService.gtfsTimeToSeconds(st.arrivalTime);
-      if (seconds == null) continue;
-      timesByStop.putIfAbsent(st.stopId, () => []).add(seconds);
+    for (final instance in _tripInstances().values) {
+      for (final st in instance) {
+        final seconds = GtfsService.gtfsTimeToSeconds(st.departureTime) ??
+            GtfsService.gtfsTimeToSeconds(st.arrivalTime);
+        if (seconds == null) continue;
+        timesByStop.putIfAbsent(st.stopId, () => []).add(seconds);
+      }
     }
 
     return stops.map((stop) {
@@ -339,25 +366,105 @@ class TransitRepository {
   }
 
   Future<void> _ensureScheduleLoaded() async {
-    if (_stopTimes != null && _trips != null && _calendar != null) return;
+    final now = DateTime.now();
+    final dateStamp = _dateStamp(now);
+    if (_stopTimes != null &&
+        _trips != null &&
+        _calendar != null &&
+        _calendarDates != null &&
+        _routes != null &&
+        _frequencies != null &&
+        _activeDate == dateStamp) {
+      return;
+    }
     final results = await Future.wait([
       GtfsService.fetchStopTimes(category: 'rapid-rail-kl'),
       GtfsService.fetchTrips(category: 'rapid-rail-kl'),
       GtfsService.fetchCalendar(category: 'rapid-rail-kl'),
+      GtfsService.fetchCalendarDates(category: 'rapid-rail-kl'),
+      GtfsService.fetchRoutes(category: 'rapid-rail-kl'),
+      GtfsService.fetchFrequencies(category: 'rapid-rail-kl'),
     ]);
     _stopTimes = results[0] as List<GtfsStopTime>;
     _trips = results[1] as List<GtfsTrip>;
     _calendar = results[2] as List<GtfsCalendarService>;
-    _activeTripIds = _computeActiveTripIds(_trips!, _calendar!, DateTime.now());
+    _calendarDates = results[3] as List<GtfsCalendarDate>;
+    _routes = results[4] as List<GtfsRoute>;
+    _frequencies = results[5] as List<GtfsFrequency>;
+    _activeTripIds =
+        _computeActiveTripIds(_trips!, _calendar!, _calendarDates!, now);
+    _activeDate = dateStamp;
+  }
+
+  /// Expands frequency-based template trips into their actual service-day
+  /// instances. Feeds without frequencies keep their listed stop times.
+  Map<String, List<GtfsStopTime>> _tripInstances() {
+    final templates = <String, List<GtfsStopTime>>{};
+    for (final stopTime in _stopTimes ?? const <GtfsStopTime>[]) {
+      if (_activeTripIds?.contains(stopTime.tripId) ?? false) {
+        templates.putIfAbsent(stopTime.tripId, () => []).add(stopTime);
+      }
+    }
+    final frequenciesByTrip = <String, List<GtfsFrequency>>{};
+    for (final frequency in _frequencies ?? const <GtfsFrequency>[]) {
+      frequenciesByTrip.putIfAbsent(frequency.tripId, () => []).add(frequency);
+    }
+    final instances = <String, List<GtfsStopTime>>{};
+    for (final entry in templates.entries) {
+      final times = entry.value
+        ..sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
+      final frequencyRows = frequenciesByTrip[entry.key];
+      if (frequencyRows == null || frequencyRows.isEmpty) {
+        instances[entry.key] = times;
+        continue;
+      }
+      final templateStart = GtfsService.gtfsTimeToSeconds(
+          times.first.departureTime.isNotEmpty
+              ? times.first.departureTime
+              : times.first.arrivalTime);
+      if (templateStart == null) continue;
+      for (final frequency in frequencyRows) {
+        final start = GtfsService.gtfsTimeToSeconds(frequency.startTime);
+        final end = GtfsService.gtfsTimeToSeconds(frequency.endTime);
+        if (start == null || end == null) continue;
+        for (var departure = start;
+            departure < end;
+            departure += frequency.headwaySeconds) {
+          final offset = departure - templateStart;
+          instances['${entry.key}#$departure'] = times
+              .map((time) => GtfsStopTime(
+                    tripId: time.tripId,
+                    stopId: time.stopId,
+                    arrivalTime: _shiftGtfsTime(time.arrivalTime, offset),
+                    departureTime: _shiftGtfsTime(time.departureTime, offset),
+                    stopSequence: time.stopSequence,
+                  ))
+              .toList();
+        }
+      }
+    }
+    return instances;
+  }
+
+  String _shiftGtfsTime(String value, int offset) {
+    final seconds = GtfsService.gtfsTimeToSeconds(value);
+    if (seconds == null) return value;
+    final shifted = seconds + offset;
+    final hours = shifted ~/ 3600;
+    final minutes = (shifted % 3600) ~/ 60;
+    final remainder = shifted % 60;
+    return '${hours.toString().padLeft(2, '0')}:'
+        '${minutes.toString().padLeft(2, '0')}:'
+        '${remainder.toString().padLeft(2, '0')}';
   }
 
   Set<String> _computeActiveTripIds(
     List<GtfsTrip> trips,
     List<GtfsCalendarService> calendar,
+    List<GtfsCalendarDate> calendarDates,
     DateTime today,
   ) {
-    final todayStamp =
-        '${today.year.toString().padLeft(4, '0')}${today.month.toString().padLeft(2, '0')}${today.day.toString().padLeft(2, '0')}';
+    final todayStamp = _dateStamp(today);
 
     bool runsToday(GtfsCalendarService service) {
       final withinRange = (service.startDate.isEmpty ||
@@ -386,9 +493,19 @@ class TransitRepository {
 
     final activeServiceIds =
         calendar.where(runsToday).map((s) => s.serviceId).toSet();
+    for (final exception in calendarDates.where((e) => e.date == todayStamp)) {
+      if (exception.exceptionType == 1) {
+        activeServiceIds.add(exception.serviceId);
+      } else {
+        activeServiceIds.remove(exception.serviceId);
+      }
+    }
     return trips
         .where((t) => activeServiceIds.contains(t.serviceId))
         .map((t) => t.tripId)
         .toSet();
   }
+
+  String _dateStamp(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
 }

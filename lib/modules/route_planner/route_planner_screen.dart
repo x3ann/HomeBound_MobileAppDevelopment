@@ -25,8 +25,10 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   bool _locating = false;
   bool _planning = false;
   String? _validationMessage;
-  List<Stop> _suggestions = const [];
-  int _searchVersion = 0;
+  List<Stop> _originSuggestions = const [];
+  List<Stop> _destinationSuggestions = const [];
+  int _originSearchVersion = 0;
+  int _destinationSearchVersion = 0;
   List<RouteOption> _routes = const [];
 
   @override
@@ -53,35 +55,29 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
         LocationField(
             icon: Icons.trip_origin,
             hint: 'Current location or origin stop',
-            controller: _originController),
+            controller: _originController,
+            onChanged: _findOriginSuggestions),
+        if (_originSuggestions.isNotEmpty)
+          _SuggestionList(
+            stops: _originSuggestions,
+            onSelected: (stop) => setState(() {
+              _originController.text = stop.name;
+              _originSuggestions = const [];
+            }),
+          ),
         const SizedBox(height: 10),
         LocationField(
             icon: Icons.location_on_rounded,
             hint: 'Destination',
             controller: _destinationController,
-            onChanged: _findSuggestions),
-        if (_suggestions.isNotEmpty)
-          Container(
-            margin: const EdgeInsets.only(top: 4),
-            decoration: BoxDecoration(
-                color: const Color(0xFF252946),
-                borderRadius: BorderRadius.circular(12)),
-            child: Column(
-              children: _suggestions
-                  .map((stop) => ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.train_rounded, size: 18),
-                        title: Text(stop.name,
-                            style: const TextStyle(fontSize: 14)),
-                        subtitle: Text(stop.platform,
-                            style: const TextStyle(fontSize: 11)),
-                        onTap: () => setState(() {
-                          _destinationController.text = stop.name;
-                          _suggestions = const [];
-                        }),
-                      ))
-                  .toList(),
-            ),
+            onChanged: _findDestinationSuggestions),
+        if (_destinationSuggestions.isNotEmpty)
+          _SuggestionList(
+            stops: _destinationSuggestions,
+            onSelected: (stop) => setState(() {
+              _destinationController.text = stop.name;
+              _destinationSuggestions = const [];
+            }),
           ),
         const SizedBox(height: 10),
         TextButton.icon(
@@ -176,14 +172,54 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
     }
   }
 
-  Future<void> _findSuggestions(String query) async {
-    final request = ++_searchVersion;
+  Future<void> _findOriginSuggestions(String query) async {
+    final request = ++_originSearchVersion;
     if (query.trim().length < 2) {
-      setState(() => _suggestions = const []);
+      setState(() => _originSuggestions = const []);
       return;
     }
     final stops = await TransitRepository.instance.searchStops(query);
-    if (!mounted || request != _searchVersion) return;
-    setState(() => _suggestions = stops);
+    if (!mounted || request != _originSearchVersion) return;
+    setState(() => _originSuggestions = stops);
   }
+
+  Future<void> _findDestinationSuggestions(String query) async {
+    final request = ++_destinationSearchVersion;
+    if (query.trim().length < 2) {
+      setState(() => _destinationSuggestions = const []);
+      return;
+    }
+    final stops = await TransitRepository.instance.searchStops(query);
+    if (!mounted || request != _destinationSearchVersion) return;
+    setState(() => _destinationSuggestions = stops);
+  }
+}
+
+class _SuggestionList extends StatelessWidget {
+  final List<Stop> stops;
+  final ValueChanged<Stop> onSelected;
+
+  const _SuggestionList({required this.stops, required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.only(top: 4),
+        decoration: BoxDecoration(
+          color: const Color(0xFF252946),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: stops
+              .map((stop) => ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.train_rounded, size: 18),
+                    title:
+                        Text(stop.name, style: const TextStyle(fontSize: 14)),
+                    subtitle: Text(stop.platform,
+                        style: const TextStyle(fontSize: 11)),
+                    onTap: () => onSelected(stop),
+                  ))
+              .toList(),
+        ),
+      );
 }

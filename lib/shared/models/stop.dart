@@ -7,7 +7,6 @@ import '../theme/app_theme.dart';
 /// `lastService` are populated from the live GTFS Static feed
 /// (stops.txt + stop_times.txt + trips.txt + calendar.txt) by
 /// TransitRepository whenever a stop is successfully matched to the feed.
-/// If the feed is unavailable, stops fall back to the mock values below.
 class Stop {
   final String name;
   final String platform;
@@ -17,6 +16,7 @@ class Stop {
   final String? gtfsStopId;
   final String lastService;
   final String? liveRailEstimate;
+  final double? distanceMeters;
 
   const Stop({
     required this.name,
@@ -27,6 +27,7 @@ class Stop {
     this.gtfsStopId,
     this.lastService = '—',
     this.liveRailEstimate,
+    this.distanceMeters,
   });
 
   Stop copyWith({
@@ -38,6 +39,7 @@ class Stop {
     String? gtfsStopId,
     String? lastService,
     String? liveRailEstimate,
+    double? distanceMeters,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -48,45 +50,15 @@ class Stop {
       gtfsStopId: gtfsStopId ?? this.gtfsStopId,
       lastService: lastService ?? this.lastService,
       liveRailEstimate: liveRailEstimate ?? this.liveRailEstimate,
+      distanceMeters: distanceMeters ?? this.distanceMeters,
     );
   }
 
   String get formattedCountdown {
+    if (timeToDeparture <= Duration.zero) return 'No more today';
+    final h = timeToDeparture.inHours;
     final m = timeToDeparture.inMinutes.remainder(60);
     final s = timeToDeparture.inSeconds.remainder(60);
-    return '${m}m ${s.toString().padLeft(2, '0')}s';
+    return h > 0 ? '${h}h ${m}m' : '${m}m ${s.toString().padLeft(2, '0')}s';
   }
-}
-
-/// Mock dataset used only as an offline fallback when the live GTFS feed
-/// (stops/schedules) can't be reached. TransitRepository overwrites the
-/// countdown/urgency/lastService fields with real schedule data whenever
-/// a stop successfully matches the live feed.
-class MockData {
-  static const List<Stop> nearbyStops = [
-    Stop(
-      name: 'Pasar Seni LRT',
-      platform: 'Platform 2 · Kelana Jaya Line',
-      position: LatLng(3.1424, 101.6959),
-      timeToDeparture: Duration(minutes: 6, seconds: 11),
-      urgency: ServiceUrgency.critical,
-      lastService: '11:58 PM',
-    ),
-    Stop(
-      name: 'KL Sentral',
-      platform: 'Platform 1 · KTM Komuter',
-      position: LatLng(3.1341, 101.6866),
-      timeToDeparture: Duration(minutes: 18, seconds: 42),
-      urgency: ServiceUrgency.closingSoon,
-      lastService: '11:58 PM',
-    ),
-    Stop(
-      name: 'Masjid Jamek',
-      platform: 'Platform 3 · Ampang Line',
-      position: LatLng(3.1488, 101.6956),
-      timeToDeparture: Duration(minutes: 34),
-      urgency: ServiceUrgency.onTime,
-      lastService: '11:58 PM',
-    ),
-  ];
 }
