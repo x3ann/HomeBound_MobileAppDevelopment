@@ -46,6 +46,27 @@ class RouteCard extends StatelessWidget {
           Text(route.etaSummary,
               style: const TextStyle(
                   fontSize: 13, color: AppColors.textSecondary)),
+          if (route.steps.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ...route.steps.map((step) => Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 3),
+                        child: Icon(Icons.chevron_right_rounded,
+                            size: 15, color: AppColors.gold),
+                      ),
+                      Expanded(
+                        child: Text(step,
+                            style: const TextStyle(
+                                fontSize: 11, color: AppColors.textSecondary)),
+                      ),
+                    ],
+                  ),
+                )),
+          ],
           const SizedBox(height: 8),
           const Text('Based on the official published timetable',
               style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),

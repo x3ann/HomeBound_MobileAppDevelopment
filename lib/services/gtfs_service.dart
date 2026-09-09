@@ -104,6 +104,8 @@ class GtfsService {
     final tripIdx = header.indexOf('trip_id');
     final routeIdx = header.indexOf('route_id');
     final serviceIdx = header.indexOf('service_id');
+    final shapeIdx = header.indexOf('shape_id');
+    final directionIdx = header.indexOf('direction_id');
     if (tripIdx < 0 || routeIdx < 0 || serviceIdx < 0) {
       throw const FormatException('trips.txt missing expected GTFS columns');
     }
@@ -117,9 +119,66 @@ class GtfsService {
         tripId: row[tripIdx].toString(),
         routeId: row[routeIdx].toString(),
         serviceId: row[serviceIdx].toString(),
+        shapeId: shapeIdx >= 0 && row.length > shapeIdx
+            ? row[shapeIdx].toString()
+            : '',
+        directionId: directionIdx >= 0 && row.length > directionIdx
+            ? int.tryParse(row[directionIdx].toString())
+            : null,
       ));
     }
     return trips;
+  }
+
+  /// Fetches ordered route geometry from the optional GTFS shapes file.
+  static Future<List<GtfsShapePoint>> fetchShapes(
+      {String category = 'rapid-rail-kl'}) async {
+    List<List<dynamic>> rows;
+    try {
+      rows = await _fetchCsvFile(category: category, fileName: 'shapes.txt');
+    } on FormatException {
+      return const [];
+    }
+    if (rows.isEmpty) return const [];
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final idIdx = header.indexOf('shape_id');
+    final latIdx = header.indexOf('shape_pt_lat');
+    final lonIdx = header.indexOf('shape_pt_lon');
+    final sequenceIdx = header.indexOf('shape_pt_sequence');
+    if (idIdx < 0 || latIdx < 0 || lonIdx < 0 || sequenceIdx < 0) {
+      throw const FormatException('shapes.txt missing expected GTFS columns');
+    }
+    final points = <GtfsShapePoint>[];
+    for (final row in rows.skip(1)) {
+      final maxIdx =
+          [idIdx, latIdx, lonIdx, sequenceIdx].reduce((a, b) => a > b ? a : b);
+      if (row.length <= maxIdx) continue;
+      final lat = double.tryParse(row[latIdx].toString());
+      final lon = double.tryParse(row[lonIdx].toString());
+      final sequence = int.tryParse(row[sequenceIdx].toString());
+      if (lat == null || lon == null || sequence == null) continue;
+      points.add(GtfsShapePoint(
+        shapeId: row[idIdx].toString(),
+        lat: lat,
+        lon: lon,
+        sequence: sequence,
+      ));
+    }
+    return points;
+  }
+
+  /// GTFS service days continue after midnight. Before [cutoffHour], use the
+  /// previous calendar date and add 24 hours to the wall-clock time.
+  static DateTime serviceDateFor(DateTime now, {int cutoffHour = 4}) =>
+      now.hour < cutoffHour
+          ? DateTime(now.year, now.month, now.day)
+              .subtract(const Duration(days: 1))
+          : DateTime(now.year, now.month, now.day);
+
+  static int secondsIntoServiceDay(DateTime now, {int cutoffHour = 4}) {
+    final seconds = now.hour * 3600 + now.minute * 60 + now.second;
+    return now.hour < cutoffHour ? seconds + 86400 : seconds;
   }
 
   /// Fetches repeating trip windows used by the rail feed to describe

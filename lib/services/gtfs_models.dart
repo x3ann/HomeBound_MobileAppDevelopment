@@ -51,11 +51,30 @@ class GtfsTrip {
   final String tripId;
   final String routeId;
   final String serviceId;
+  final String shapeId;
+  final int? directionId;
 
   const GtfsTrip({
     required this.tripId,
     required this.routeId,
     required this.serviceId,
+    this.shapeId = '',
+    this.directionId,
+  });
+}
+
+/// One ordered geographic point from GTFS `shapes.txt`.
+class GtfsShapePoint {
+  final String shapeId;
+  final double lat;
+  final double lon;
+  final int sequence;
+
+  const GtfsShapePoint({
+    required this.shapeId,
+    required this.lat,
+    required this.lon,
+    required this.sequence,
   });
 }
 

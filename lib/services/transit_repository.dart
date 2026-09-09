@@ -1,6 +1,10 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart' show Color;
 import 'package:latlong2/latlong.dart';
 import '../shared/models/stop.dart';
 import '../shared/models/route_model.dart';
+import '../shared/models/transit_shape.dart';
 import '../shared/theme/app_theme.dart';
 import 'gtfs_models.dart';
 import 'gtfs_service.dart';
@@ -89,6 +93,19 @@ class TransitRepository {
     }
   }
 
+  /// Recalculates countdowns from the cached official timetable. This handles
+  /// app sessions crossing midnight without downloading the feed again.
+  Future<TransitLookupResult> recalculateStops() async {
+    if (_cachedStops == null) return getNearbyStops();
+    try {
+      final updated = await _withRealSchedule(_cachedStops!);
+      _cachedStops = updated;
+      return TransitLookupResult(updated, TransitDataSource.cached);
+    } catch (_) {
+      return TransitLookupResult(_cachedStops!, TransitDataSource.cached);
+    }
+  }
+
   /// Orders the available stop list by walking distance from a device location.
   /// The distance is calculated locally, so this still works with cached data.
   List<Stop> sortByDistance(List<Stop> stops, LatLng userLocation) {
@@ -112,6 +129,61 @@ class TransitRepository {
         : stop.copyWith(liveRailEstimate: estimate.text);
   }
 
+  Future<List<TransitShape>> getRailShapes() async {
+    final results = await Future.wait([
+      GtfsService.fetchShapes(category: 'rapid-rail-kl'),
+      GtfsService.fetchTrips(category: 'rapid-rail-kl'),
+      GtfsService.fetchRoutes(category: 'rapid-rail-kl'),
+    ]);
+    final shapePoints = results[0] as List<GtfsShapePoint>;
+    final trips = results[1] as List<GtfsTrip>;
+    final routes = results[2] as List<GtfsRoute>;
+    final routeNames = {
+      for (final route in routes)
+        route.routeId: route.shortName.trim().isNotEmpty
+            ? route.shortName.trim()
+            : route.longName.trim(),
+    };
+    final routeByShape = <String, String>{};
+    for (final trip in trips) {
+      if (trip.shapeId.isNotEmpty) {
+        routeByShape[trip.shapeId] = routeNames[trip.routeId] ?? trip.routeId;
+      }
+    }
+    final grouped = <String, List<GtfsShapePoint>>{};
+    for (final point in shapePoints) {
+      if (routeByShape.containsKey(point.shapeId)) {
+        grouped.putIfAbsent(point.shapeId, () => []).add(point);
+      }
+    }
+    const colors = [
+      Color(0xFFE53935),
+      Color(0xFF1E88E5),
+      Color(0xFF43A047),
+      Color(0xFFFDD835),
+      Color(0xFF8E24AA),
+      Color(0xFF00ACC1),
+      Color(0xFFFB8C00),
+      Color(0xFF6D4C41),
+    ];
+    final labels = routeByShape.values.toSet().toList()..sort();
+    final colorByRoute = {
+      for (var i = 0; i < labels.length; i++)
+        labels[i]: colors[i % colors.length]
+    };
+    return grouped.entries.map((entry) {
+      final ordered = entry.value
+        ..sort((a, b) => a.sequence.compareTo(b.sequence));
+      final label = routeByShape[entry.key] ?? 'Rapid Rail';
+      return TransitShape(
+        id: entry.key,
+        routeLabel: label,
+        points: ordered.map((point) => LatLng(point.lat, point.lon)).toList(),
+        color: colorByRoute[label]!,
+      );
+    }).toList();
+  }
+
   /// Official station directory for origin and destination autocomplete.
   Future<List<Stop>> searchStops(String query) async {
     await _ensureStationDirectory();
@@ -130,7 +202,8 @@ class TransitRepository {
     return matches.take(6).toList();
   }
 
-  /// Finds direct or one-interchange scheduled GTFS rail journeys.
+  /// Finds scheduled journeys with walking connections and up to three
+  /// interchanges. Several departure offsets produce useful alternatives.
   Future<List<RouteOption>> planRoute(
       String originName, String destinationName) async {
     await _ensureStationDirectory();
@@ -149,13 +222,52 @@ class TransitRepository {
     final destinations = await searchStops(destinationName);
     if (origins.isEmpty || destinations.isEmpty) return const [];
     await _ensureScheduleLoaded();
-    final originIds =
-        origins.map((stop) => stop.gtfsStopId).whereType<String>().toSet();
-    final destinationIds =
-        destinations.map((stop) => stop.gtfsStopId).whereType<String>().toSet();
+    final nowSeconds = GtfsService.secondsIntoServiceDay(DateTime.now());
+    final advanced = _scanNetworkRoutes(
+      coordinateMatch == null
+          ? _resolvedStopIds(origins, originName)
+          : origins.map((stop) => stop.gtfsStopId).whereType<String>().toSet(),
+      _resolvedStopIds(destinations, destinationName),
+      nowSeconds,
+    );
+    if (advanced.isNotEmpty) return advanced;
+    return _planLegacyRoute(originName, destinationName);
+  }
+
+  Set<String> _resolvedStopIds(List<Stop> matches, String query) {
+    final needle = query.trim().toLowerCase();
+    final exact = matches
+        .where((stop) => stop.name.trim().toLowerCase() == needle)
+        .toList();
+    final selected = exact.isNotEmpty ? exact : matches.take(1);
+    return selected.map((stop) => stop.gtfsStopId).whereType<String>().toSet();
+  }
+
+  Future<List<RouteOption>> _planLegacyRoute(
+      String originName, String destinationName) async {
+    await _ensureStationDirectory();
+    final coordinateMatch = RegExp(
+      r'\((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)',
+    ).firstMatch(originName);
+    final origins = coordinateMatch == null
+        ? await searchStops(originName)
+        : sortByDistance(
+            _stationDirectory!,
+            LatLng(
+              double.parse(coordinateMatch.group(1)!),
+              double.parse(coordinateMatch.group(2)!),
+            ),
+          ).take(1).toList();
+    final destinations = await searchStops(destinationName);
+    if (origins.isEmpty || destinations.isEmpty) return const [];
+    await _ensureScheduleLoaded();
+    final originIds = coordinateMatch == null
+        ? _resolvedStopIds(origins, originName)
+        : origins.map((stop) => stop.gtfsStopId).whereType<String>().toSet();
+    final destinationIds = _resolvedStopIds(destinations, destinationName);
     if (originIds.isEmpty || destinationIds.isEmpty) return const [];
     final now = DateTime.now();
-    final nowSeconds = now.hour * 3600 + now.minute * 60 + now.second;
+    final nowSeconds = GtfsService.secondsIntoServiceDay(now);
     final byTrip = _tripInstances();
     final routeNames = {
       for (final route in _routes!)
@@ -256,6 +368,191 @@ class TransitRepository {
     return unique.values.take(3).toList();
   }
 
+  List<RouteOption> _scanNetworkRoutes(
+      Set<String> originIds, Set<String> destinationIds, int nowSeconds) {
+    if (originIds.isEmpty || destinationIds.isEmpty) return const [];
+    final stationById = {
+      for (final stop in _stationDirectory ?? const <Stop>[])
+        if (stop.gtfsStopId != null) stop.gtfsStopId!: stop,
+    };
+    final routeNames = {
+      for (final route in _routes ?? const <GtfsRoute>[])
+        route.routeId: route.shortName.trim().isNotEmpty
+            ? route.shortName.trim()
+            : route.longName.trim(),
+    };
+    final routeByTrip = {
+      for (final trip in _trips ?? const <GtfsTrip>[])
+        trip.tripId: routeNames[trip.routeId] ?? trip.routeId,
+    };
+    final connections = <_TransitConnection>[];
+    for (final entry in _tripInstances().entries) {
+      final originalTripId = entry.key.split('#').first;
+      final routeLabel = routeByTrip[originalTripId] ?? 'Rapid Rail';
+      final times = entry.value;
+      for (var index = 0; index + 1 < times.length; index++) {
+        final departure =
+            GtfsService.gtfsTimeToSeconds(times[index].departureTime);
+        final arrival =
+            GtfsService.gtfsTimeToSeconds(times[index + 1].arrivalTime);
+        if (departure == null || arrival == null || arrival < departure) {
+          continue;
+        }
+        connections.add(_TransitConnection(
+          fromStopId: times[index].stopId,
+          toStopId: times[index + 1].stopId,
+          departure: departure,
+          arrival: arrival,
+          tripInstanceId: entry.key,
+          routeLabel: routeLabel,
+        ));
+      }
+    }
+    connections.sort((a, b) => a.departure.compareTo(b.departure));
+    final walking = _walkingConnections(stationById);
+    final options = <RouteOption>[];
+
+    for (final offset in const [0, 300, 600, 900, 1200]) {
+      final requestedStart = nowSeconds + offset;
+      final best = <String, _JourneyState>{};
+      for (final originId in originIds) {
+        best[originId] = _JourneyState(
+          stopId: originId,
+          time: requestedStart,
+          departure: -1,
+          tripInstanceId: null,
+          rides: 0,
+          steps: const [],
+          routes: const [],
+        );
+      }
+      _relaxWalking(best, originIds, walking, stationById);
+      for (final connection in connections) {
+        if (connection.departure < requestedStart) continue;
+        final state = best[connection.fromStopId];
+        if (state == null) continue;
+        final continuing = state.tripInstanceId == connection.tripInstanceId;
+        final transferBuffer =
+            state.tripInstanceId != null && !continuing ? 60 : 0;
+        if (state.time + transferBuffer > connection.departure) continue;
+        final rides = state.rides + (continuing ? 0 : 1);
+        if (rides > 4) continue;
+        final departure =
+            state.departure < 0 ? connection.departure : state.departure;
+        final fromName =
+            stationById[connection.fromStopId]?.name ?? connection.fromStopId;
+        final steps = continuing
+            ? state.steps
+            : [
+                ...state.steps,
+                'Take ${connection.routeLabel} from $fromName',
+              ];
+        final routes = continuing ||
+                (state.routes.isNotEmpty &&
+                    state.routes.last == connection.routeLabel)
+            ? state.routes
+            : [...state.routes, connection.routeLabel];
+        final candidate = _JourneyState(
+          stopId: connection.toStopId,
+          time: connection.arrival,
+          departure: departure,
+          tripInstanceId: connection.tripInstanceId,
+          rides: rides,
+          steps: steps,
+          routes: routes,
+        );
+        final existing = best[connection.toStopId];
+        if (existing == null ||
+            candidate.time < existing.time ||
+            (candidate.time == existing.time &&
+                candidate.rides < existing.rides)) {
+          best[connection.toStopId] = candidate;
+          _relaxWalking(best, {connection.toStopId}, walking, stationById);
+        }
+      }
+      final destinations = destinationIds
+          .map((id) => best[id])
+          .whereType<_JourneyState>()
+          .where((state) => state.departure >= 0)
+          .toList()
+        ..sort((a, b) => a.time.compareTo(b.time));
+      if (destinations.isEmpty) continue;
+      final result = destinations.first;
+      final destinationName = stationById[result.stopId]?.name ?? result.stopId;
+      options.add(RouteOption(
+        departureTime: GtfsService.formatSecondsAsClock(result.departure),
+        mode: result.routes.isEmpty
+            ? 'Walk'
+            : 'Rapid Rail · ${result.routes.join(' → ')}',
+        etaSummary:
+            'Arrives ${GtfsService.formatSecondsAsClock(result.time)} · ${(result.time - result.departure) ~/ 60} min · ${math.max(0, result.rides - 1)} transfer${result.rides == 2 ? '' : 's'}',
+        status: ServiceUrgency.onTime,
+        steps: [...result.steps, 'Arrive at $destinationName'],
+        transferCount: math.max(0, result.rides - 1),
+      ));
+    }
+    final unique = <String, RouteOption>{};
+    for (final option in options) {
+      unique.putIfAbsent(
+          '${option.departureTime}|${option.mode}|${option.etaSummary}',
+          () => option);
+    }
+    return unique.values.take(3).toList();
+  }
+
+  Map<String, List<_WalkingConnection>> _walkingConnections(
+      Map<String, Stop> stationById) {
+    const distance = Distance();
+    final entries = stationById.entries.toList();
+    final result = <String, List<_WalkingConnection>>{};
+    for (var i = 0; i < entries.length; i++) {
+      for (var j = i + 1; j < entries.length; j++) {
+        final meters = distance.as(LengthUnit.Meter, entries[i].value.position,
+            entries[j].value.position);
+        if (meters > 450) continue;
+        final seconds = math.max(60, (meters / 1.25).round());
+        result
+            .putIfAbsent(entries[i].key, () => [])
+            .add(_WalkingConnection(entries[j].key, seconds));
+        result
+            .putIfAbsent(entries[j].key, () => [])
+            .add(_WalkingConnection(entries[i].key, seconds));
+      }
+    }
+    return result;
+  }
+
+  void _relaxWalking(
+    Map<String, _JourneyState> best,
+    Set<String> startingStops,
+    Map<String, List<_WalkingConnection>> walking,
+    Map<String, Stop> stationById,
+  ) {
+    final queue = startingStops.toList();
+    while (queue.isNotEmpty) {
+      queue.sort((a, b) => best[a]!.time.compareTo(best[b]!.time));
+      final stopId = queue.removeAt(0);
+      final state = best[stopId]!;
+      for (final edge in walking[stopId] ?? const <_WalkingConnection>[]) {
+        final arrival = state.time + edge.seconds;
+        final existing = best[edge.toStopId];
+        if (existing != null && existing.time <= arrival) continue;
+        final minutes = math.max(1, (edge.seconds / 60).ceil());
+        final destination = stationById[edge.toStopId]?.name ?? edge.toStopId;
+        best[edge.toStopId] = _JourneyState(
+          stopId: edge.toStopId,
+          time: arrival,
+          departure: state.departure,
+          tripInstanceId: null,
+          rides: state.rides,
+          steps: [...state.steps, 'Walk $minutes min to $destination'],
+          routes: state.routes,
+        );
+        queue.add(edge.toStopId);
+      }
+    }
+  }
+
   ({int departure, RouteOption route}) _routeResult(
       int departure, int arrival, String mode) {
     return (
@@ -318,7 +615,7 @@ class TransitRepository {
     if (_stopTimes == null || _activeTripIds == null) return stops;
 
     final now = DateTime.now();
-    final nowSeconds = now.hour * 3600 + now.minute * 60 + now.second;
+    final nowSeconds = GtfsService.secondsIntoServiceDay(now);
 
     final timesByStop = <String, List<int>>{};
     for (final instance in _tripInstances().values) {
@@ -367,7 +664,8 @@ class TransitRepository {
 
   Future<void> _ensureScheduleLoaded() async {
     final now = DateTime.now();
-    final dateStamp = _dateStamp(now);
+    final serviceDate = GtfsService.serviceDateFor(now);
+    final dateStamp = _dateStamp(serviceDate);
     if (_stopTimes != null &&
         _trips != null &&
         _calendar != null &&
@@ -391,8 +689,8 @@ class TransitRepository {
     _calendarDates = results[3] as List<GtfsCalendarDate>;
     _routes = results[4] as List<GtfsRoute>;
     _frequencies = results[5] as List<GtfsFrequency>;
-    _activeTripIds =
-        _computeActiveTripIds(_trips!, _calendar!, _calendarDates!, now);
+    _activeTripIds = _computeActiveTripIds(
+        _trips!, _calendar!, _calendarDates!, serviceDate);
     _activeDate = dateStamp;
   }
 
@@ -508,4 +806,48 @@ class TransitRepository {
 
   String _dateStamp(DateTime date) =>
       '${date.year.toString().padLeft(4, '0')}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
+}
+
+class _TransitConnection {
+  final String fromStopId;
+  final String toStopId;
+  final int departure;
+  final int arrival;
+  final String tripInstanceId;
+  final String routeLabel;
+
+  const _TransitConnection({
+    required this.fromStopId,
+    required this.toStopId,
+    required this.departure,
+    required this.arrival,
+    required this.tripInstanceId,
+    required this.routeLabel,
+  });
+}
+
+class _WalkingConnection {
+  final String toStopId;
+  final int seconds;
+  const _WalkingConnection(this.toStopId, this.seconds);
+}
+
+class _JourneyState {
+  final String stopId;
+  final int time;
+  final int departure;
+  final String? tripInstanceId;
+  final int rides;
+  final List<String> steps;
+  final List<String> routes;
+
+  const _JourneyState({
+    required this.stopId,
+    required this.time,
+    required this.departure,
+    required this.tripInstanceId,
+    required this.rides,
+    required this.steps,
+    required this.routes,
+  });
 }

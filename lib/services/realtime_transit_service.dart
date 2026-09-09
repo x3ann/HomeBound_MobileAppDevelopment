@@ -55,14 +55,21 @@ class RealtimeTransitService {
 
   TransitVehicle? _parseVehicle(Uint8List vehicleMessage, String category) {
     String route = '';
+    String tripId = '';
     String vehicleId = '';
     double? latitude;
     double? longitude;
     int timestamp = 0;
+    int? currentStopSequence;
+    String? stopId;
+    double? speedMps;
     for (final field in _fields(vehicleMessage)) {
       if (field.number == 1 && field.bytes != null) {
         // TripDescriptor: route_id is field 5.
         for (final trip in _fields(field.bytes!)) {
+          if (trip.number == 1 && trip.bytes != null) {
+            tripId = String.fromCharCodes(trip.bytes!);
+          }
           if (trip.number == 5 && trip.bytes != null) {
             route = String.fromCharCodes(trip.bytes!);
           }
@@ -76,7 +83,14 @@ class RealtimeTransitService {
           if (point.number == 2 && point.fixed32 != null) {
             longitude = _float(point.fixed32!);
           }
+          if (point.number == 5 && point.fixed32 != null) {
+            speedMps = _float(point.fixed32!);
+          }
         }
+      } else if (field.number == 3 && field.value != null) {
+        currentStopSequence = field.value;
+      } else if (field.number == 4 && field.bytes != null) {
+        stopId = String.fromCharCodes(field.bytes!);
       } else if (field.number == 8 && field.bytes != null) {
         // VehicleDescriptor is field 8 (not 3 — field 3 is
         // current_stop_sequence, a varint).
@@ -96,6 +110,12 @@ class RealtimeTransitService {
       routeLabel: route.isEmpty
           ? (isRail ? 'Rapid Rail service' : 'Rapid KL bus')
           : (isRail ? 'Rapid Rail $route' : 'Rapid KL $route'),
+      routeId: route,
+      tripId: tripId,
+      currentStopSequence: currentStopSequence,
+      stopId: stopId,
+      speedMps: speedMps,
+      feedCategory: category,
       position: LatLng(latitude, longitude),
       updatedAt: timestamp > 0
           ? DateTime.fromMillisecondsSinceEpoch(timestamp * 1000)

@@ -6,11 +6,15 @@ class RouteOption {
   final String mode; // e.g. "LRT · MRT"
   final String etaSummary; // e.g. "Arrives 12:04 AM · 22 min"
   final ServiceUrgency status;
+  final List<String> steps;
+  final int transferCount;
 
   const RouteOption({
     required this.departureTime,
     required this.mode,
     required this.etaSummary,
     required this.status,
+    this.steps = const [],
+    this.transferCount = 0,
   });
 }
