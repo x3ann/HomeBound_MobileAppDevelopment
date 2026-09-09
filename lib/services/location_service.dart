@@ -6,8 +6,17 @@ enum LocationStatus { available, disabled, denied, deniedForever, unavailable }
 class LocationResult {
   final LocationStatus status;
   final LatLng? position;
+  final double? accuracyMeters;
+  final DateTime? capturedAt;
+  final bool isLastKnown;
 
-  const LocationResult(this.status, [this.position]);
+  const LocationResult(
+    this.status, [
+    this.position,
+    this.accuracyMeters,
+    this.capturedAt,
+    this.isLastKnown = false,
+  ]);
 }
 
 /// Handles the permission, current-position, and continuous-position flows.
@@ -16,35 +25,46 @@ class LocationService {
   static final instance = LocationService._();
 
   Future<LocationResult> requestCurrentLocation() async {
-    if (!await Geolocator.isLocationServiceEnabled()) {
-      return const LocationResult(LocationStatus.disabled);
-    }
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied) {
-      return const LocationResult(LocationStatus.denied);
-    }
-    if (permission == LocationPermission.deniedForever) {
-      return const LocationResult(LocationStatus.deniedForever);
-    }
     try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        return const LocationResult(LocationStatus.disabled);
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied) {
+        return const LocationResult(LocationStatus.denied);
+      }
+      if (permission == LocationPermission.deniedForever) {
+        return const LocationResult(LocationStatus.deniedForever);
+      }
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
           timeLimit: Duration(seconds: 15),
         ),
       );
-      return LocationResult(LocationStatus.available,
-          LatLng(position.latitude, position.longitude));
+      return LocationResult(
+        LocationStatus.available,
+        LatLng(position.latitude, position.longitude),
+        position.accuracy,
+        position.timestamp,
+      );
     } catch (_) {
-      final lastKnown = await Geolocator.getLastKnownPosition();
-      if (lastKnown != null) {
-        return LocationResult(
-          LocationStatus.available,
-          LatLng(lastKnown.latitude, lastKnown.longitude),
-        );
+      try {
+        final lastKnown = await Geolocator.getLastKnownPosition();
+        if (lastKnown != null) {
+          return LocationResult(
+            LocationStatus.available,
+            LatLng(lastKnown.latitude, lastKnown.longitude),
+            lastKnown.accuracy,
+            lastKnown.timestamp,
+            true,
+          );
+        }
+      } catch (_) {
+        // The platform may also reject access to its last known position.
       }
       return const LocationResult(LocationStatus.unavailable);
     }

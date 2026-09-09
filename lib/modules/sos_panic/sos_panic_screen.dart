@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../services/emergency_contact_service.dart';
+import '../../services/location_service.dart';
 import '../../shared/theme/app_theme.dart';
 
 class SosPanicScreen extends StatefulWidget {
@@ -12,13 +13,33 @@ class SosPanicScreen extends StatefulWidget {
 }
 
 class _SosPanicScreenState extends State<SosPanicScreen> {
-  final TextEditingController _contactController = TextEditingController();
+  static const _emergencyNumber =
+      String.fromEnvironment('EMERGENCY_NUMBER', defaultValue: '999');
 
-  Position? _currentPosition;
+  final _contactController = TextEditingController();
+  final _contactService = EmergencyContactService();
+  final _locationService = LocationService.instance;
+
+  LocationResult? _location;
   bool _isSosActive = false;
   bool _isGettingLocation = false;
+  bool _isSavingContact = false;
+  String? _contactError;
 
-  String _locationStatus = 'Location not retrieved yet';
+  @override
+  void initState() {
+    super.initState();
+    _loadContact();
+  }
+
+  Future<void> _loadContact() async {
+    try {
+      final saved = await _contactService.load();
+      if (mounted && saved != null) _contactController.text = saved;
+    } catch (_) {
+      // Contact entry still works if device preferences are unavailable.
+    }
+  }
 
   @override
   void dispose() {
@@ -27,192 +48,122 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
   }
 
   Future<void> _getCurrentLocation() async {
+    setState(() => _isGettingLocation = true);
+    final result = await _locationService.requestCurrentLocation();
+    if (!mounted) return;
     setState(() {
-      _isGettingLocation = true;
-      _locationStatus = 'Getting current location...';
+      _location = result;
+      _isGettingLocation = false;
     });
+    switch (result.status) {
+      case LocationStatus.disabled:
+        _showMessage('Enable location services to attach your position.');
+      case LocationStatus.denied:
+        _showMessage('Location permission was denied.');
+      case LocationStatus.deniedForever:
+        _showMessage('Enable location permission in device settings.');
+      case LocationStatus.unavailable:
+        _showMessage('A current or last known location was not available.');
+      case LocationStatus.available:
+        if (result.isLastKnown) {
+          _showMessage('Using the last known location; it may be outdated.');
+        }
+    }
+  }
 
+  Future<void> _saveContact() async {
+    final value = _contactController.text;
+    if (!EmergencyContactService.isValid(value)) {
+      setState(() =>
+          _contactError = 'Enter 7–15 digits, optionally starting with +.');
+      return;
+    }
+    setState(() {
+      _contactError = null;
+      _isSavingContact = true;
+    });
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-
-      if (!serviceEnabled) {
-        setState(() {
-          _isGettingLocation = false;
-          _locationStatus = 'Location services are disabled.';
-        });
-
-        _showMessage('Please enable location services.');
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied) {
-        setState(() {
-          _isGettingLocation = false;
-          _locationStatus = 'Location permission was denied.';
-        });
-
-        _showMessage('Location permission is required for SOS.');
-        return;
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        setState(() {
-          _isGettingLocation = false;
-          _locationStatus = 'Location permission is permanently denied.';
-        });
-
-        _showMessage('Please enable location permission in Settings.');
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
-      );
-
+      await _contactService.save(value);
+      final normalized = EmergencyContactService.normalize(value);
       if (!mounted) return;
-
-      setState(() {
-        _currentPosition = position;
-        _isGettingLocation = false;
-        _locationStatus = 'Current location detected';
-      });
+      _contactController.text = normalized;
+      _showMessage('Emergency contact saved on this device.');
     } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
-        _isGettingLocation = false;
-        _locationStatus = 'Unable to retrieve current location.';
-      });
-
-      _showMessage('Unable to get your current location.');
+      if (mounted) _showMessage('Unable to save the emergency contact.');
+    } finally {
+      if (mounted) setState(() => _isSavingContact = false);
     }
   }
 
   Future<void> _activateSos() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(
-                Icons.warning_amber_rounded,
-                color: AppColors.critical,
-              ),
-              SizedBox(width: 10),
-              Text('Activate SOS?'),
-            ],
-          ),
-          content: const Text(
-            'This will activate emergency mode. '
-                'You can then call emergency services or prepare '
-                'an SOS message for your emergency contact.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context, false);
-              },
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context, true);
-              },
-              child: const Text('Activate SOS'),
-            ),
-          ],
-        );
-      },
+      builder: (context) => AlertDialog(
+        title: const Text('Activate emergency mode?'),
+        content: const Text(
+          'This prepares the emergency actions but does not place a call or send a message automatically.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Activate')),
+        ],
+      ),
     );
-
-    if (confirmed != true) return;
-
-    setState(() {
-      _isSosActive = true;
-    });
-
+    if (confirmed != true || !mounted) return;
+    setState(() => _isSosActive = true);
     await _getCurrentLocation();
   }
 
-  void _cancelSos() {
-    setState(() {
-      _isSosActive = false;
-    });
-
-    _showMessage('SOS emergency mode cancelled.');
-  }
-
   Future<void> _callEmergencyServices() async {
-    final uri = Uri(
-      scheme: 'tel',
-      path: '999',
-    );
-
-    final launched = await launchUrl(
-      uri,
-      mode: LaunchMode.externalApplication,
-    );
-
-    if (!launched) {
-      _showMessage('Unable to open the phone dialer.');
+    try {
+      final launched = await launchUrl(
+        Uri(scheme: 'tel', path: _emergencyNumber),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched) _showMessage('Unable to open the phone dialer.');
+    } catch (_) {
+      _showMessage('Unable to open the phone dialer on this device.');
     }
   }
 
-  Future<void> _sendEmergencyMessage() async {
-    final contact = _contactController.text.trim();
-
-    if (contact.isEmpty) {
-      _showMessage('Please enter an emergency contact number.');
+  Future<void> _prepareEmergencyMessage() async {
+    final contact = _contactController.text;
+    if (!EmergencyContactService.isValid(contact)) {
+      setState(() => _contactError = 'Enter a valid emergency contact first.');
+      _showMessage('Enter and save a valid emergency contact.');
       return;
     }
-
-    if (_currentPosition == null) {
-      _showMessage('Please get your current location first.');
+    final location = _location;
+    final position = location?.position;
+    if (location?.status != LocationStatus.available || position == null) {
+      _showMessage('Get your location before preparing the message.');
       return;
     }
-
-    final latitude = _currentPosition!.latitude.toStringAsFixed(6);
-    final longitude = _currentPosition!.longitude.toStringAsFixed(6);
-
-    final message =
-        'SOS! I may need help. My current location is: '
-        'https://maps.google.com/?q=$latitude,$longitude';
-
-    final uri = Uri(
-      scheme: 'sms',
-      path: contact,
-      queryParameters: {
-        'body': message,
-      },
+    final message = EmergencyContactService.buildMessage(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      capturedAt: location!.capturedAt ?? DateTime.now(),
+      accuracyMeters: location.accuracyMeters,
     );
-
-    final launched = await launchUrl(
-      uri,
-      mode: LaunchMode.externalApplication,
-    );
-
-    if (!launched) {
-      _showMessage('Unable to open the messaging app.');
+    try {
+      final launched = await launchUrl(
+        EmergencyContactService.smsUri(contact: contact, message: message),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched) _showMessage('Unable to open the messaging app.');
+    } catch (_) {
+      _showMessage('Unable to open the messaging app on this device.');
     }
   }
 
   void _showMessage(String message) {
     if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-      ),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -220,375 +171,280 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text(
-          'SOS Panic Button',
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-          ),
-        ),
+        title: const Text('Emergency Assistance',
+            style: TextStyle(fontWeight: FontWeight.w700)),
       ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 30),
           children: [
-            _buildStatusCard(),
-            const SizedBox(height: 30),
-            Center(
-              child: _buildSosButton(),
-            ),
-            const SizedBox(height: 18),
+            _statusCard(),
+            const SizedBox(height: 24),
+            Center(child: _sosButton()),
+            const SizedBox(height: 12),
             Text(
               _isSosActive
-                  ? 'SOS MODE ACTIVE'
-                  : 'Tap the button in an emergency',
+                  ? 'MODE ACTIVE — NO ALERT SENT YET'
+                  : 'Tap in an emergency',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: _isSosActive
-                    ? AppColors.critical
-                    : AppColors.textSecondary,
+                color:
+                    _isSosActive ? AppColors.critical : AppColors.textSecondary,
                 fontWeight: FontWeight.w800,
-                letterSpacing: 1,
+                letterSpacing: .8,
               ),
             ),
-            const SizedBox(height: 30),
-            _buildLocationCard(),
-            const SizedBox(height: 16),
-            _buildEmergencyContactCard(),
-            const SizedBox(height: 16),
-            _buildEmergencyActions(),
+            const SizedBox(height: 24),
+            _locationCard(),
+            const SizedBox(height: 14),
+            _contactCard(),
+            const SizedBox(height: 14),
+            _actions(),
             if (_isSosActive) ...[
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: _cancelSos,
+                onPressed: () => setState(() => _isSosActive = false),
                 icon: const Icon(Icons.close_rounded),
-                label: const Text('Cancel SOS'),
+                label: const Text('Cancel Emergency Mode'),
               ),
             ],
-            const SizedBox(height: 22),
-            _buildSafetyNotice(),
+            const SizedBox(height: 18),
+            _safetyNotice(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildStatusCard() {
-    final active = _isSosActive;
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: active ? AppColors.critical : AppColors.divider,
+  Widget _statusCard() => _card(
+        child: Row(
+          children: [
+            Icon(
+              _isSosActive ? Icons.warning_rounded : Icons.shield_outlined,
+              color: _isSosActive ? AppColors.critical : AppColors.success,
+              size: 34,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Emergency status',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Text(
+                    _isSosActive ? 'Actions ready' : 'Emergency mode inactive',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: active
-                  ? AppColors.critical.withValues(alpha: 0.15)
-                  : AppColors.surfaceAlt,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Icon(
-              active
-                  ? Icons.warning_rounded
-                  : Icons.shield_outlined,
-              color: active
-                  ? AppColors.critical
-                  : AppColors.success,
-            ),
+      );
+
+  Widget _sosButton() => GestureDetector(
+        onTap: _isSosActive ? null : _activateSos,
+        child: Container(
+          width: 180,
+          height: 180,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppColors.critical.withValues(alpha: .15),
+            border: Border.all(
+                color: AppColors.critical.withValues(alpha: .4), width: 12),
           ),
-          const SizedBox(width: 14),
-          Expanded(
+          padding: const EdgeInsets.all(12),
+          child: Container(
+            decoration: const BoxDecoration(
+                shape: BoxShape.circle, color: AppColors.critical),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text(
-                  'Emergency Status',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  active
-                      ? 'SOS Active'
-                      : 'You are currently safe',
-                  style: TextStyle(
-                    color: active
-                        ? AppColors.critical
-                        : AppColors.success,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
+                const Icon(Icons.sos_rounded, size: 54, color: Colors.white),
+                Text(_isSosActive ? 'READY' : 'SOS',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900)),
               ],
             ),
           ),
+        ),
+      );
+
+  Widget _locationCard() {
+    final location = _location;
+    final position = location?.position;
+    final available =
+        location?.status == LocationStatus.available && position != null;
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _CardTitle(icon: Icons.location_on_rounded, text: 'Location'),
+          const SizedBox(height: 10),
+          Text(_locationText(location),
+              style: const TextStyle(color: AppColors.textSecondary)),
+          if (available) ...[
+            const SizedBox(height: 10),
+            SelectableText(
+                '${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}'),
+            const SizedBox(height: 4),
+            Text(
+              '${location!.isLastKnown ? 'Last known' : 'Current'} · '
+              '${location.accuracyMeters == null ? 'accuracy unavailable' : '±${location.accuracyMeters!.round()} m'} · '
+              '${_formatTimestamp(location.capturedAt)}',
+              style:
+                  const TextStyle(color: AppColors.textSecondary, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _isGettingLocation ? null : _getCurrentLocation,
+            icon: _isGettingLocation
+                ? const SizedBox(
+                    width: 17,
+                    height: 17,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.my_location_rounded),
+            label: Text(_isGettingLocation ? 'Locating…' : 'Update Location'),
+          ),
+          if (location?.status == LocationStatus.deniedForever)
+            TextButton.icon(
+              onPressed: _locationService.openAppSettings,
+              icon: const Icon(Icons.settings_rounded),
+              label: const Text('Open App Settings'),
+            ),
+          if (location?.status == LocationStatus.disabled)
+            TextButton.icon(
+              onPressed: _locationService.openLocationSettings,
+              icon: const Icon(Icons.location_disabled_rounded),
+              label: const Text('Open Location Settings'),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildSosButton() {
-    final active = _isSosActive;
-
-    return GestureDetector(
-      onTap: active ? null : _activateSos,
-      child: Container(
-        width: 190,
-        height: 190,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: AppColors.critical.withValues(
-            alpha: active ? 0.20 : 0.12,
-          ),
-          border: Border.all(
-            color: AppColors.critical.withValues(alpha: 0.35),
-            width: 12,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.critical.withValues(alpha: 0.20),
-              blurRadius: 35,
-              spreadRadius: 8,
-            ),
-          ],
-        ),
-        child: Container(
-          margin: const EdgeInsets.all(12),
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: AppColors.critical,
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.sos_rounded,
-                size: 56,
-                color: Colors.white,
-              ),
-              const SizedBox(height: 5),
-              Text(
-                active ? 'ACTIVE' : 'SOS',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 25,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLocationCard() {
-    final position = _currentPosition;
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: AppColors.divider,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(
-                Icons.location_on_rounded,
-                color: AppColors.gold,
-              ),
-              SizedBox(width: 10),
-              Text(
-                'Current Location',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Text(
-            _locationStatus,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 13,
-            ),
-          ),
-          if (position != null) ...[
+  Widget _contactCard() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _CardTitle(
+                icon: Icons.contact_phone_rounded, text: 'Emergency Contact'),
+            const SizedBox(height: 8),
+            const Text('Saved only on this device.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
             const SizedBox(height: 12),
-            Text(
-              'Latitude: ${position.latitude.toStringAsFixed(6)}',
-              style: const TextStyle(
-                fontWeight: FontWeight.w700,
+            TextField(
+              controller: _contactController,
+              keyboardType: TextInputType.phone,
+              autofillHints: const [AutofillHints.telephoneNumber],
+              onChanged: (_) {
+                if (_contactError != null) setState(() => _contactError = null);
+              },
+              decoration: InputDecoration(
+                hintText: 'Example: 0123456789',
+                prefixIcon: const Icon(Icons.phone_rounded),
+                errorText: _contactError,
               ),
             ),
-            const SizedBox(height: 5),
-            Text(
-              'Longitude: ${position.longitude.toStringAsFixed(6)}',
-              style: const TextStyle(
-                fontWeight: FontWeight.w700,
-              ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _isSavingContact ? null : _saveContact,
+              icon: const Icon(Icons.save_outlined),
+              label: Text(_isSavingContact ? 'Saving…' : 'Save Contact'),
             ),
           ],
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed:
-              _isGettingLocation ? null : _getCurrentLocation,
-              icon: _isGettingLocation
-                  ? const SizedBox(
-                width: 17,
-                height: 17,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                ),
-              )
-                  : const Icon(
-                Icons.my_location_rounded,
-                color: AppColors.gold,
-              ),
-              label: Text(
-                _isGettingLocation
-                    ? 'Getting Location...'
-                    : 'Get Current Location',
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmergencyContactCard() {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: AppColors.divider,
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(
-                Icons.contact_phone_rounded,
-                color: AppColors.gold,
-              ),
-              SizedBox(width: 10),
-              Text(
-                'Emergency Contact',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Enter a phone number to prepare an SOS message.',
-            style: TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 12,
-            ),
-          ),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _contactController,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(
-              hintText: 'Example: 0123456789',
-              prefixIcon: Icon(Icons.phone_rounded),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+      );
 
-  Widget _buildEmergencyActions() {
-    return Column(
-      children: [
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
+  Widget _actions() => Column(
+        children: [
+          ElevatedButton.icon(
             onPressed: _callEmergencyServices,
             icon: const Icon(Icons.phone_rounded),
-            label: const Text(
-              'Call Emergency Services (999)',
-            ),
+            label: const Text('Open Dialer ($_emergencyNumber)'),
           ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: _sendEmergencyMessage,
-            icon: const Icon(
-              Icons.sms_rounded,
-              color: AppColors.gold,
-            ),
-            label: const Text(
-              'Prepare SOS Message',
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSafetyNotice() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceAlt,
-        borderRadius: BorderRadius.circular(15),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            Icons.info_outline_rounded,
-            color: AppColors.gold,
-            size: 20,
-          ),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'HomeBound opens your phone dialer or messaging app. '
-                  'You must confirm the call or send the message yourself.',
-              style: TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-                height: 1.5,
-              ),
-            ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _prepareEmergencyMessage,
+            icon: const Icon(Icons.sms_rounded),
+            label: const Text('Prepare Location Message'),
           ),
         ],
-      ),
-    );
+      );
+
+  Widget _safetyNotice() => _card(
+        color: AppColors.surfaceAlt,
+        child: const Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline_rounded, color: AppColors.gold),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'The app only opens your dialer or messaging app. Confirm the recipient and location, then place the call or send the message yourself.',
+                style: TextStyle(
+                    color: AppColors.textSecondary, fontSize: 12, height: 1.45),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _card({required Widget child, Color color = AppColors.surface}) =>
+      Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.divider),
+        ),
+        child: child,
+      );
+
+  String _locationText(LocationResult? result) {
+    if (_isGettingLocation) return 'Requesting a precise location…';
+    if (result == null) return 'Location has not been requested yet.';
+    return switch (result.status) {
+      LocationStatus.available => result.isLastKnown
+          ? 'Using the last known location. Update again if it looks stale.'
+          : 'Current location detected.',
+      LocationStatus.disabled => 'Location services are disabled.',
+      LocationStatus.denied => 'Location permission was denied.',
+      LocationStatus.deniedForever =>
+        'Location permission must be enabled in Settings.',
+      LocationStatus.unavailable => 'No usable location was available.',
+    };
   }
+
+  String _formatTimestamp(DateTime? value) {
+    if (value == null) return 'time unavailable';
+    final local = value.toLocal();
+    final hour = local.hour % 12 == 0 ? 12 : local.hour % 12;
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute ${local.hour >= 12 ? 'PM' : 'AM'}';
+  }
+}
+
+class _CardTitle extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _CardTitle({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Icon(icon, color: AppColors.gold),
+          const SizedBox(width: 9),
+          Text(text,
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+        ],
+      );
 }
