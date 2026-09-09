@@ -29,7 +29,7 @@ class CountdownCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: urgency.color.withOpacity(0.4)),
+        border: Border.all(color: urgency.color.withValues(alpha: 0.4)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -72,20 +72,28 @@ class CountdownCard extends StatelessWidget {
                       fontSize: 44, fontWeight: FontWeight.w800)),
               const Text('m ',
                   style:
-                  TextStyle(fontSize: 18, color: AppColors.textSecondary)),
+                      TextStyle(fontSize: 18, color: AppColors.textSecondary)),
               Text(_ss,
                   style: const TextStyle(
                       fontSize: 44, fontWeight: FontWeight.w800)),
               const Text('s',
                   style:
-                  TextStyle(fontSize: 18, color: AppColors.textSecondary)),
+                      TextStyle(fontSize: 18, color: AppColors.textSecondary)),
             ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            stop.liveRailEstimate == null
+                ? 'Live rail estimate unavailable · showing official schedule'
+                : 'Experimental live estimate: ${stop.liveRailEstimate}',
+            style:
+                const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
           const SizedBox(height: 4),
           Text(
             'Last scheduled service: ${stop.lastService} tonight',
             style:
-            const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
         ],
       ),

@@ -21,32 +21,39 @@ class RealtimeTransitService {
   static const _baseUrl =
       'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana';
 
-  /// [category] defaults to `rapid-rail-kl`, which covers LRT/MRT/monorail
-  /// vehicles. Pass `rapid-bus-kl` etc. to track buses instead.
-  Future<List<TransitVehicle>> fetchVehicles({String category = 'rapid-rail-kl'}) async {
+  /// Official live positions are currently available for Rapid Bus, not rail.
+  Future<List<TransitVehicle>> fetchVehicles(
+      {String category = 'rapid-bus-kl'}) async {
     final uri = Uri.parse('$_baseUrl?category=$category');
     final response = await http.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw http.ClientException(
           'Realtime API returned ${response.statusCode}');
     }
+    return parseVehicles(response.bodyBytes, category: category);
+  }
+
+  /// Parses a complete FeedMessage. FeedEntity is field 2 at the feed level;
+  /// VehiclePosition is field 4 inside each entity.
+  List<TransitVehicle> parseVehicles(Uint8List feed,
+      {String category = 'rapid-bus-kl'}) {
     final vehicles = <TransitVehicle>[];
-    // FeedEntity.vehicle is field 4 (not 2 — field 2 is is_deleted, a
-    // varint, which is why checking field.bytes on it was always null).
-    for (final entity
-    in _fields(response.bodyBytes).where((field) => field.number == 4)) {
-      final vehicle = _parseVehicle(entity.bytes!, category);
-      if (vehicle != null) vehicles.add(vehicle);
+    for (final entityField
+        in _fields(feed).where((field) => field.number == 2)) {
+      final entity = entityField.bytes;
+      if (entity == null) continue;
+      for (final vehicleField
+          in _fields(entity).where((field) => field.number == 4)) {
+        final payload = vehicleField.bytes;
+        if (payload == null) continue;
+        final vehicle = _parseVehicle(payload, category);
+        if (vehicle != null) vehicles.add(vehicle);
+      }
     }
     return vehicles;
   }
 
-  TransitVehicle? _parseVehicle(Uint8List entity, String category) {
-    Uint8List? vehicleMessage;
-    // entity here is already the VehiclePosition message payload (we
-    // matched FeedEntity.vehicle above), so parse it directly.
-    vehicleMessage = entity;
-
+  TransitVehicle? _parseVehicle(Uint8List vehicleMessage, String category) {
     String route = '';
     String vehicleId = '';
     double? latitude;

@@ -32,8 +32,7 @@ class LastServiceTrackerScreen extends StatefulWidget {
       _LastServiceTrackerScreenState();
 }
 
-class _LastServiceTrackerScreenState
-    extends State<LastServiceTrackerScreen> {
+class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
   Timer? _timer;
 
   bool _loading = true;
@@ -54,8 +53,7 @@ class _LastServiceTrackerScreenState
   }
 
   Future<void> _load() async {
-    final result =
-    await TransitRepository.instance.getNearbyStops();
+    final result = await TransitRepository.instance.getNearbyStops();
 
     if (!mounted) return;
 
@@ -79,7 +77,7 @@ class _LastServiceTrackerScreenState
 
     _timer = Timer.periodic(
       const Duration(seconds: 1),
-          (_) {
+      (_) {
         if (!mounted) return;
 
         setState(() {
@@ -99,8 +97,7 @@ class _LastServiceTrackerScreenState
       _locationMessage = null;
     });
 
-    final location =
-    await LocationService.instance.requestCurrentLocation();
+    final location = await LocationService.instance.requestCurrentLocation();
 
     if (!mounted) return;
 
@@ -113,26 +110,29 @@ class _LastServiceTrackerScreenState
 
         _remaining = _nearestStop.timeToDeparture;
 
-        _locationMessage =
-        'Stops are ordered by distance from your location.';
+        _locationMessage = 'Stops are ordered by distance from your location.';
 
         _locating = false;
       });
 
       _startCountdown();
 
+      final estimated = await TransitRepository.instance
+          .withExperimentalEstimate(_nearestStop);
+      if (mounted) setState(() => _stops[0] = estimated);
+
       return;
     }
 
     const messages = {
       LocationStatus.disabled:
-      'Turn on Location Services to find nearby stops.',
+          'Turn on Location Services to find nearby stops.',
       LocationStatus.denied:
-      'Location permission was not granted. You can try again anytime.',
+          'Location permission was not granted. You can try again anytime.',
       LocationStatus.deniedForever:
-      'Location permission is blocked. Enable it in your phone settings.',
+          'Location permission is blocked. Enable it in your phone settings.',
       LocationStatus.unavailable:
-      'We could not get your location. Please try again.',
+          'We could not get your location. Please try again.',
     };
 
     setState(() {
@@ -184,15 +184,14 @@ class _LastServiceTrackerScreenState
     final criticalCount = _stops
         .where(
           (s) => s.urgency == ServiceUrgency.critical,
-    )
+        )
         .length;
 
     return RefreshIndicator(
       color: AppColors.gold,
       backgroundColor: AppColors.surface,
       onRefresh: () async {
-        final result =
-        await TransitRepository.instance.getNearbyStops(
+        final result = await TransitRepository.instance.getNearbyStops(
           forceRefresh: true,
         );
 
@@ -215,8 +214,7 @@ class _LastServiceTrackerScreenState
         ),
         children: [
           Row(
-            mainAxisAlignment:
-            MainAxisAlignment.spaceBetween,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text(
                 'Homebound',
@@ -225,7 +223,6 @@ class _LastServiceTrackerScreenState
                   fontWeight: FontWeight.w800,
                 ),
               ),
-
               Material(
                 color: Colors.transparent,
                 child: InkWell(
@@ -247,42 +244,35 @@ class _LastServiceTrackerScreenState
               ),
             ],
           ),
-
           const SizedBox(height: 8),
-
           Align(
             alignment: Alignment.centerLeft,
             child: DataSourceBadge(
               source: _source,
             ),
           ),
-
           const SizedBox(height: 12),
-
           OutlinedButton.icon(
-            onPressed:
-            _locating ? null : _useCurrentLocation,
+            onPressed: _locating ? null : _useCurrentLocation,
             icon: _locating
                 ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-              ),
-            )
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                    ),
+                  )
                 : const Icon(
-              Icons.my_location_rounded,
-            ),
+                    Icons.my_location_rounded,
+                  ),
             label: Text(
               _locating
                   ? 'Finding your location…'
                   : 'Refresh my current location',
             ),
           ),
-
           if (_locationMessage != null) ...[
             const SizedBox(height: 8),
-
             Text(
               _locationMessage!,
               style: const TextStyle(
@@ -291,25 +281,19 @@ class _LastServiceTrackerScreenState
               ),
             ),
           ],
-
           const SizedBox(height: 16),
-
           CountdownCard(
             stop: _nearestStop,
             remaining: _remaining,
             urgency: _urgency,
           ),
-
           const SizedBox(height: 16),
-
           LiveMapPreviewCard(
             nearbyCount: _stops.length,
             criticalCount: criticalCount,
             onTap: widget.onOpenLiveMap,
           ),
-
           const SizedBox(height: 16),
-
           const Row(
             children: [
               Expanded(
@@ -319,9 +303,7 @@ class _LastServiceTrackerScreenState
                   caption: 'Rapid KL 780',
                 ),
               ),
-
               SizedBox(width: 12),
-
               Expanded(
                 child: StatTile(
                   label: 'Delay Risk',
@@ -331,9 +313,7 @@ class _LastServiceTrackerScreenState
               ),
             ],
           ),
-
           const SizedBox(height: 20),
-
           const Text(
             'Nearby Stops',
             style: TextStyle(
@@ -341,11 +321,9 @@ class _LastServiceTrackerScreenState
               fontWeight: FontWeight.w700,
             ),
           ),
-
           const SizedBox(height: 10),
-
           ..._stops.map(
-                (s) => StopTile(
+            (s) => StopTile(
               stop: s,
             ),
           ),

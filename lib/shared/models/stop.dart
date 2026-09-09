@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import '../theme/app_theme.dart';
 
@@ -17,6 +16,7 @@ class Stop {
   final ServiceUrgency urgency;
   final String? gtfsStopId;
   final String lastService;
+  final String? liveRailEstimate;
 
   const Stop({
     required this.name,
@@ -26,6 +26,7 @@ class Stop {
     required this.urgency,
     this.gtfsStopId,
     this.lastService = '—',
+    this.liveRailEstimate,
   });
 
   Stop copyWith({
@@ -36,6 +37,7 @@ class Stop {
     ServiceUrgency? urgency,
     String? gtfsStopId,
     String? lastService,
+    String? liveRailEstimate,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -45,6 +47,7 @@ class Stop {
       urgency: urgency ?? this.urgency,
       gtfsStopId: gtfsStopId ?? this.gtfsStopId,
       lastService: lastService ?? this.lastService,
+      liveRailEstimate: liveRailEstimate ?? this.liveRailEstimate,
     );
   }
 
@@ -60,28 +63,28 @@ class Stop {
 /// countdown/urgency/lastService fields with real schedule data whenever
 /// a stop successfully matches the live feed.
 class MockData {
-  static final List<Stop> nearbyStops = [
+  static const List<Stop> nearbyStops = [
     Stop(
       name: 'Pasar Seni LRT',
       platform: 'Platform 2 · Kelana Jaya Line',
-      position: const LatLng(3.1424, 101.6959),
-      timeToDeparture: const Duration(minutes: 6, seconds: 11),
+      position: LatLng(3.1424, 101.6959),
+      timeToDeparture: Duration(minutes: 6, seconds: 11),
       urgency: ServiceUrgency.critical,
       lastService: '11:58 PM',
     ),
     Stop(
       name: 'KL Sentral',
       platform: 'Platform 1 · KTM Komuter',
-      position: const LatLng(3.1341, 101.6866),
-      timeToDeparture: const Duration(minutes: 18, seconds: 42),
+      position: LatLng(3.1341, 101.6866),
+      timeToDeparture: Duration(minutes: 18, seconds: 42),
       urgency: ServiceUrgency.closingSoon,
       lastService: '11:58 PM',
     ),
     Stop(
       name: 'Masjid Jamek',
       platform: 'Platform 3 · Ampang Line',
-      position: const LatLng(3.1488, 101.6956),
-      timeToDeparture: const Duration(minutes: 34),
+      position: LatLng(3.1488, 101.6956),
+      timeToDeparture: Duration(minutes: 34),
       urgency: ServiceUrgency.onTime,
       lastService: '11:58 PM',
     ),

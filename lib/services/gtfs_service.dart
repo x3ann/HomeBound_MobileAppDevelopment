@@ -20,11 +20,13 @@ class GtfsService {
   /// Fetches and parses stops.txt for the given Prasarana category.
   /// Throws on any network/parse failure — callers should catch and fall
   /// back to cached/mock data rather than let this bubble up to the UI.
-  static Future<List<GtfsStop>> fetchStops({String category = 'rapid-rail-kl'}) async {
+  static Future<List<GtfsStop>> fetchStops(
+      {String category = 'rapid-rail-kl'}) async {
     final rows = await _fetchCsvFile(category: category, fileName: 'stops.txt');
     if (rows.isEmpty) return [];
 
-    final header = rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
     final idIdx = header.indexOf('stop_id');
     final nameIdx = header.indexOf('stop_name');
     final latIdx = header.indexOf('stop_lat');
@@ -35,7 +37,8 @@ class GtfsService {
 
     final stops = <GtfsStop>[];
     for (final row in rows.skip(1)) {
-      if (row.length <= [idIdx, nameIdx, latIdx, lonIdx].reduce((a, b) => a > b ? a : b)) {
+      if (row.length <=
+          [idIdx, nameIdx, latIdx, lonIdx].reduce((a, b) => a > b ? a : b)) {
         continue; // malformed row, skip
       }
       final lat = double.tryParse(row[latIdx].toString());
@@ -52,34 +55,46 @@ class GtfsService {
   }
 
   /// Fetches and parses routes.txt for the given Prasarana category.
-  static Future<List<GtfsRoute>> fetchRoutes({String category = 'rapid-rail-kl'}) async {
-    final rows = await _fetchCsvFile(category: category, fileName: 'routes.txt');
+  static Future<List<GtfsRoute>> fetchRoutes(
+      {String category = 'rapid-rail-kl'}) async {
+    final rows =
+        await _fetchCsvFile(category: category, fileName: 'routes.txt');
     if (rows.isEmpty) return [];
 
-    final header = rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
     final idIdx = header.indexOf('route_id');
     final shortIdx = header.indexOf('route_short_name');
     final longIdx = header.indexOf('route_long_name');
-    if (idIdx < 0) throw const FormatException('routes.txt missing route_id column');
+    if (idIdx < 0) {
+      throw const FormatException('routes.txt missing route_id column');
+    }
 
     final routes = <GtfsRoute>[];
     for (final row in rows.skip(1)) {
-      if (row.length <= idIdx) continue;
+      if (row.length <= idIdx) {
+        continue;
+      }
       routes.add(GtfsRoute(
         routeId: row[idIdx].toString(),
-        shortName: shortIdx >= 0 && row.length > shortIdx ? row[shortIdx].toString() : '',
-        longName: longIdx >= 0 && row.length > longIdx ? row[longIdx].toString() : '',
+        shortName: shortIdx >= 0 && row.length > shortIdx
+            ? row[shortIdx].toString()
+            : '',
+        longName:
+            longIdx >= 0 && row.length > longIdx ? row[longIdx].toString() : '',
       ));
     }
     return routes;
   }
 
   /// Fetches and parses trips.txt for the given Prasarana category.
-  static Future<List<GtfsTrip>> fetchTrips({String category = 'rapid-rail-kl'}) async {
+  static Future<List<GtfsTrip>> fetchTrips(
+      {String category = 'rapid-rail-kl'}) async {
     final rows = await _fetchCsvFile(category: category, fileName: 'trips.txt');
     if (rows.isEmpty) return [];
 
-    final header = rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
     final tripIdx = header.indexOf('trip_id');
     final routeIdx = header.indexOf('route_id');
     final serviceIdx = header.indexOf('service_id');
@@ -89,7 +104,8 @@ class GtfsService {
 
     final trips = <GtfsTrip>[];
     for (final row in rows.skip(1)) {
-      final maxIdx = [tripIdx, routeIdx, serviceIdx].reduce((a, b) => a > b ? a : b);
+      final maxIdx =
+          [tripIdx, routeIdx, serviceIdx].reduce((a, b) => a > b ? a : b);
       if (row.length <= maxIdx) continue;
       trips.add(GtfsTrip(
         tripId: row[tripIdx].toString(),
@@ -101,11 +117,14 @@ class GtfsService {
   }
 
   /// Fetches and parses calendar.txt for the given Prasarana category.
-  static Future<List<GtfsCalendarService>> fetchCalendar({String category = 'rapid-rail-kl'}) async {
-    final rows = await _fetchCsvFile(category: category, fileName: 'calendar.txt');
+  static Future<List<GtfsCalendarService>> fetchCalendar(
+      {String category = 'rapid-rail-kl'}) async {
+    final rows =
+        await _fetchCsvFile(category: category, fileName: 'calendar.txt');
     if (rows.isEmpty) return [];
 
-    final header = rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
     final serviceIdx = header.indexOf('service_id');
     final dayIdx = {
       for (final day in [
@@ -143,8 +162,11 @@ class GtfsService {
         friday: dayFlag(row, 'friday'),
         saturday: dayFlag(row, 'saturday'),
         sunday: dayFlag(row, 'sunday'),
-        startDate: startIdx >= 0 && row.length > startIdx ? row[startIdx].toString() : '',
-        endDate: endIdx >= 0 && row.length > endIdx ? row[endIdx].toString() : '',
+        startDate: startIdx >= 0 && row.length > startIdx
+            ? row[startIdx].toString()
+            : '',
+        endDate:
+            endIdx >= 0 && row.length > endIdx ? row[endIdx].toString() : '',
       ));
     }
     return services;
@@ -154,31 +176,37 @@ class GtfsService {
   /// This is the file that actually lets us compute a real "next
   /// departure" and "last service" per stop — stops.txt alone only has
   /// station geography, not schedules.
-  static Future<List<GtfsStopTime>> fetchStopTimes({String category = 'rapid-rail-kl'}) async {
-    final rows = await _fetchCsvFile(category: category, fileName: 'stop_times.txt');
+  static Future<List<GtfsStopTime>> fetchStopTimes(
+      {String category = 'rapid-rail-kl'}) async {
+    final rows =
+        await _fetchCsvFile(category: category, fileName: 'stop_times.txt');
     if (rows.isEmpty) return [];
 
-    final header = rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    final header =
+        rows.first.map((h) => h.toString().trim().toLowerCase()).toList();
     final tripIdx = header.indexOf('trip_id');
     final stopIdx = header.indexOf('stop_id');
     final arrIdx = header.indexOf('arrival_time');
     final depIdx = header.indexOf('departure_time');
     final seqIdx = header.indexOf('stop_sequence');
     if (tripIdx < 0 || stopIdx < 0 || arrIdx < 0 || depIdx < 0) {
-      throw const FormatException('stop_times.txt missing expected GTFS columns');
+      throw const FormatException(
+          'stop_times.txt missing expected GTFS columns');
     }
 
     final stopTimes = <GtfsStopTime>[];
     for (final row in rows.skip(1)) {
-      final maxIdx = [tripIdx, stopIdx, arrIdx, depIdx].reduce((a, b) => a > b ? a : b);
+      final maxIdx =
+          [tripIdx, stopIdx, arrIdx, depIdx].reduce((a, b) => a > b ? a : b);
       if (row.length <= maxIdx) continue;
       stopTimes.add(GtfsStopTime(
         tripId: row[tripIdx].toString(),
         stopId: row[stopIdx].toString(),
         arrivalTime: row[arrIdx].toString().trim(),
         departureTime: row[depIdx].toString().trim(),
-        stopSequence:
-        seqIdx >= 0 && row.length > seqIdx ? int.tryParse(row[seqIdx].toString()) ?? 0 : 0,
+        stopSequence: seqIdx >= 0 && row.length > seqIdx
+            ? int.tryParse(row[seqIdx].toString()) ?? 0
+            : 0,
       ));
     }
     return stopTimes;
@@ -220,16 +248,20 @@ class GtfsService {
     final response = await http.get(uri).timeout(_timeout);
 
     if (response.statusCode != 200) {
-      throw http.ClientException('GTFS Static API returned ${response.statusCode}', uri);
+      throw http.ClientException(
+          'GTFS Static API returned ${response.statusCode}', uri);
     }
 
     final archive = ZipDecoder().decodeBytes(response.bodyBytes);
     final file = archive.files.firstWhere(
-          (f) => f.name.toLowerCase() == fileName.toLowerCase(),
-      orElse: () => throw FormatException('$fileName not found in GTFS feed for $category'),
+      (f) => f.name.toLowerCase() == fileName.toLowerCase(),
+      orElse: () => throw FormatException(
+          '$fileName not found in GTFS feed for $category'),
     );
 
-    final content = utf8.decode(file.content as List<int>, allowMalformed: true);
-    return const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(content);
+    final content =
+        utf8.decode(file.content as List<int>, allowMalformed: true);
+    return const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
+        .convert(content);
   }
 }
