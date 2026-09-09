@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/location_service.dart';
 import '../../services/bus_arrival_service.dart';
@@ -40,18 +41,24 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   bool _loadingVehicles = false;
   bool _mapReady = false;
   bool _loadingArrivals = false;
+  bool _loadingBusStops = false;
   List<Stop> _stops = const [];
+  List<Stop> _busStops = const [];
   List<TransitVehicle> _vehicles = const [];
   List<BusArrivalEstimate> _busArrivals = const [];
   List<TransitShape> _railShapes = const [];
   TransitDataSource _source = TransitDataSource.unavailable;
   LatLng? _userLocation;
+  LatLng? _lastBusStopCenter;
+  DateTime? _lastBusStopAttempt;
+  Stop? _selectedStop;
   String _query = '';
   String? _liveMessage;
   String? _locationMessage;
   LocationStatus? _locationStatus;
   DateTime? _lastVehicleUpdate;
   double _zoom = 14;
+  double _nearbyRadiusKm = 2;
 
   @override
   void initState() {
@@ -148,11 +155,61 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       _locationStatus = LocationStatus.available;
       _locationMessage = null;
       _stops = TransitRepository.instance.sortByDistance(_stops, position);
+      _busStops =
+          TransitRepository.instance.sortByDistance(_busStops, position);
     });
     if (_mapReady) {
-      _mapController.move(position, 14.5);
+      if (_selectedStop == null) _mapController.move(position, 14.5);
     }
     _refreshBusArrivals();
+    _refreshNearbyBusStops(position);
+  }
+
+  Future<void> _refreshNearbyBusStops(LatLng position) async {
+    if (_loadingBusStops) return;
+    const distance = Distance();
+    if (_lastBusStopCenter != null &&
+        distance.as(LengthUnit.Meter, _lastBusStopCenter!, position) < 250) {
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastBusStopAttempt != null &&
+        now.difference(_lastBusStopAttempt!) < const Duration(seconds: 30)) {
+      return;
+    }
+    _lastBusStopAttempt = now;
+    _loadingBusStops = true;
+    final stops = <Stop>[];
+    try {
+      for (final category in const [
+        'rapid-bus-kl',
+        'rapid-bus-mrtfeeder',
+      ]) {
+        try {
+          stops.addAll(await BusArrivalService.instance.nearbyStops(
+            userLocation: position,
+            radiusMeters: 2000,
+            category: category,
+          ));
+        } catch (_) {
+          // Keep stops from the other official feed.
+        }
+      }
+      final unique = <String, Stop>{};
+      for (final stop in stops) {
+        unique.putIfAbsent(
+          '${stop.gtfsStopId}|${stop.position.latitude.toStringAsFixed(5)}',
+          () => stop,
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _busStops = unique.values.toList();
+        if (unique.isNotEmpty) _lastBusStopCenter = position;
+      });
+    } finally {
+      _loadingBusStops = false;
+    }
   }
 
   Future<void> _resolveLocationIssue() async {
@@ -227,7 +284,16 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         }
       }
       estimates.sort((a, b) => a.eta.compareTo(b.eta));
-      if (mounted) setState(() => _busArrivals = estimates.take(8).toList());
+      if (mounted) {
+        const distance = Distance();
+        setState(() => _busArrivals = estimates
+            .where((arrival) =>
+                distance.as(
+                    LengthUnit.Kilometer, location, arrival.stop.position) <=
+                _nearbyRadiusKm)
+            .take(8)
+            .toList());
+      }
     } finally {
       _loadingArrivals = false;
     }
@@ -255,6 +321,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         _userLocation ?? (_stops.isEmpty ? null : _stops.first.position);
     final shownVehicles = _matchingVehicles();
     final shownStops = _matchingStops();
+    const distance = Distance();
+    final shownBusArrivals = _busArrivals
+        .where((arrival) =>
+            _userLocation == null ||
+            distance.as(LengthUnit.Kilometer, _userLocation!,
+                    arrival.stop.position) <=
+                _nearbyRadiusKm)
+        .toList();
     final clusters = _clusterStops(shownStops);
 
     return Column(children: [
@@ -306,92 +380,198 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         ),
       ),
       const SizedBox(height: 8),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(
+          children: [
+            const Text('Nearby radius',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            const SizedBox(width: 10),
+            for (final radius in const [1.0, 2.0]) ...[
+              ChoiceChip(
+                label: Text('${radius.toInt()} km'),
+                selected: _nearbyRadiusKm == radius,
+                onSelected: (_) => setState(() {
+                  _nearbyRadiusKm = radius;
+                  if (_selectedStop != null &&
+                      (_selectedStop!.distanceMeters ?? double.infinity) >
+                          radius * 1000) {
+                    _selectedStop = null;
+                  }
+                }),
+              ),
+              const SizedBox(width: 6),
+            ],
+            const Spacer(),
+            Text('${shownStops.length} stops',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11)),
+          ],
+        ),
+      ),
+      const SizedBox(height: 8),
       Expanded(
-        flex: 4,
+        flex: _selectedStop == null ? 4 : 2,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: center == null
-                ? const Center(child: Text('Map data is unavailable'))
-                : FlutterMap(
-                    mapController: _mapController,
-                    options: MapOptions(
-                      initialCenter: center,
-                      initialZoom: 14,
-                      onPositionChanged: (position, _) {
-                        final zoom = position.zoom;
-                        if (zoom != null && (zoom - _zoom).abs() >= 0.25) {
-                          setState(() => _zoom = zoom);
-                        }
-                      },
-                      onMapReady: () {
-                        _mapReady = true;
-                        final location = _userLocation;
-                        if (location != null) {
-                          _mapController.move(location, 14.5);
-                        }
-                      },
-                    ),
-                    children: [
-                      TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'com.homebound.app'),
-                      PolylineLayer(
-                        polylineCulling: true,
-                        polylines: _railShapes
-                            .where((shape) => shape.points.length > 1)
-                            .map((shape) => Polyline(
-                                  points: shape.points,
-                                  strokeWidth: 3,
-                                  color: shape.color.withValues(alpha: 0.75),
-                                ))
-                            .toList(),
-                      ),
-                      MarkerLayer(markers: [
-                        ...clusters.map((cluster) => Marker(
-                              point: cluster.center,
-                              width: 44,
-                              height: 44,
-                              child: cluster.stops.length == 1
-                                  ? StopPin(stop: cluster.stops.single)
-                                  : _ClusterPin(
-                                      count: cluster.stops.length,
-                                      onTap: () => _mapController.move(
-                                          cluster.center,
-                                          math.min(_zoom + 2, 18)),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: center == null
+                      ? const Center(child: Text('Map data is unavailable'))
+                      : FlutterMap(
+                          mapController: _mapController,
+                          options: MapOptions(
+                            initialCenter: center,
+                            initialZoom: 14,
+                            onPositionChanged: (position, _) {
+                              final zoom = position.zoom;
+                              if (zoom != null &&
+                                  (zoom - _zoom).abs() >= 0.25) {
+                                setState(() => _zoom = zoom);
+                              }
+                            },
+                            onMapReady: () {
+                              _mapReady = true;
+                              final location = _userLocation;
+                              if (location != null) {
+                                _mapController.move(location, 14.5);
+                              }
+                            },
+                          ),
+                          children: [
+                            TileLayer(
+                                urlTemplate:
+                                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                userAgentPackageName: 'com.homebound.app'),
+                            PolylineLayer(
+                              polylineCulling: true,
+                              polylines: [
+                                ..._railShapes
+                                    .where((shape) => shape.points.length > 1)
+                                    .map((shape) => Polyline(
+                                          points: shape.points,
+                                          strokeWidth: 3,
+                                          color: shape.color
+                                              .withValues(alpha: 0.75),
+                                        )),
+                                if (_selectedStop != null &&
+                                    _userLocation != null)
+                                  Polyline(
+                                    points: [
+                                      _userLocation!,
+                                      _selectedStop!.position,
+                                    ],
+                                    strokeWidth: 5,
+                                    color: Colors.blueAccent,
+                                    isDotted: true,
+                                  ),
+                              ],
+                            ),
+                            MarkerLayer(markers: [
+                              ...clusters.map((cluster) => Marker(
+                                    point: cluster.center,
+                                    width: 44,
+                                    height: 44,
+                                    child: cluster.stops.length == 1
+                                        ? GestureDetector(
+                                            onTap: () => _selectStop(
+                                                cluster.stops.single),
+                                            child: StopPin(
+                                                stop: cluster.stops.single),
+                                          )
+                                        : _ClusterPin(
+                                            count: cluster.stops.length,
+                                            onTap: () => _mapController.move(
+                                                cluster.center,
+                                                math.min(_zoom + 2, 18)),
+                                          ),
+                                  )),
+                              ...shownBusArrivals.map((arrival) => Marker(
+                                    point: arrival.stop.position,
+                                    width: 34,
+                                    height: 34,
+                                    child: GestureDetector(
+                                      onTap: () => _selectStop(arrival.stop),
+                                      child: Tooltip(
+                                        message:
+                                            '${arrival.routeLabel} · ${arrival.etaLabel}',
+                                        child: const Icon(
+                                            Icons.directions_bus_rounded,
+                                            color: Colors.orangeAccent,
+                                            size: 26),
+                                      ),
                                     ),
-                            )),
-                        ..._busArrivals.map((arrival) => Marker(
-                              point: arrival.stop.position,
-                              width: 34,
-                              height: 34,
-                              child: Tooltip(
-                                message:
-                                    '${arrival.routeLabel} · ${arrival.etaLabel}',
-                                child: const Icon(Icons.directions_bus_rounded,
-                                    color: Colors.orangeAccent, size: 26),
-                              ),
-                            )),
+                                  )),
+                              if (_userLocation != null)
+                                Marker(
+                                    point: _userLocation!,
+                                    width: 42,
+                                    height: 42,
+                                    child: const _UserLocationPin()),
+                              ...shownVehicles.map((vehicle) => Marker(
+                                  point: vehicle.position,
+                                  width: 42,
+                                  height: 42,
+                                  child: _VehiclePin(vehicle: vehicle))),
+                            ]),
+                            RichAttributionWidget(
+                              showFlutterMapAttribution: false,
+                              attributions: [
+                                TextSourceAttribution(
+                                  'OpenStreetMap contributors',
+                                  onTap: () => launchUrl(Uri.parse(
+                                      'https://www.openstreetmap.org/copyright')),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                ),
+                if (center != null)
+                  Positioned(
+                    right: 10,
+                    top: 10,
+                    child: Column(
+                      children: [
+                        _MapButton(
+                            icon: Icons.add_rounded,
+                            tooltip: 'Zoom in',
+                            onPressed: () => _zoomBy(1)),
+                        const SizedBox(height: 6),
+                        _MapButton(
+                            icon: Icons.remove_rounded,
+                            tooltip: 'Zoom out',
+                            onPressed: () => _zoomBy(-1)),
+                        const SizedBox(height: 6),
                         if (_userLocation != null)
-                          Marker(
-                              point: _userLocation!,
-                              width: 42,
-                              height: 42,
-                              child: const _UserLocationPin()),
-                        ...shownVehicles.map((vehicle) => Marker(
-                            point: vehicle.position,
-                            width: 42,
-                            height: 42,
-                            child: _VehiclePin(vehicle: vehicle))),
-                      ]),
-                    ],
+                          _MapButton(
+                              icon: Icons.my_location_rounded,
+                              tooltip: 'Center on me',
+                              onPressed: () {
+                                setState(() => _selectedStop = null);
+                                _mapController.move(_userLocation!, 15);
+                              }),
+                      ],
+                    ),
                   ),
+              ],
+            ),
           ),
         ),
       ),
       const SizedBox(height: 12),
+      if (_selectedStop case final selected?) ...[
+        _SelectedStopCard(
+          stop: selected,
+          onClose: () => setState(() => _selectedStop = null),
+          onDirections:
+              _userLocation == null ? null : () => _openDirections(selected),
+        ),
+        const SizedBox(height: 10),
+      ],
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Row(children: [
@@ -405,7 +585,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         ]),
       ),
       const SizedBox(height: 8),
-      if (_busArrivals.isNotEmpty)
+      if (shownBusArrivals.isNotEmpty)
         SizedBox(
           height: 88,
           child: Column(
@@ -421,17 +601,16 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 child: ListView.separated(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   scrollDirection: Axis.horizontal,
-                  itemCount: _busArrivals.length,
+                  itemCount: shownBusArrivals.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 8),
                   itemBuilder: (_, index) {
-                    final arrival = _busArrivals[index];
+                    final arrival = shownBusArrivals[index];
                     return ActionChip(
                       avatar:
                           const Icon(Icons.directions_bus_rounded, size: 17),
                       label: Text(
                           '${arrival.routeLabel} · ${arrival.stop.name} · ${arrival.etaLabel}'),
-                      onPressed: () =>
-                          _mapController.move(arrival.stop.position, 16),
+                      onPressed: () => _selectStop(arrival.stop),
                     );
                   },
                 ),
@@ -446,9 +625,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               children: shownStops
                   .map((stop) => StopListTile(
                         stop: stop,
-                        onTap: () {
-                          if (_mapReady) _mapController.move(stop.position, 16);
-                        },
+                        onTap: () => _selectStop(stop),
                       ))
                   .toList())),
     ]);
@@ -463,7 +640,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           vehicle.id.toLowerCase().contains(query);
       final isNearby = _userLocation == null ||
           distance.as(LengthUnit.Kilometer, _userLocation!, vehicle.position) <=
-              8;
+              _nearbyRadiusKm;
       final isFresh =
           DateTime.now().difference(vehicle.updatedAt).inMinutes <= 5;
       return matchesQuery && isNearby && isFresh;
@@ -472,19 +649,70 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   List<Stop> _matchingStops() {
     final query = _query.trim().toLowerCase();
-    final matches = _stops
+    final unique = <String, Stop>{};
+    for (final stop in [..._stops, ..._busStops]) {
+      unique.putIfAbsent(
+        '${stop.transportMode}|${stop.gtfsStopId ?? stop.name}|${stop.position.latitude.toStringAsFixed(5)}',
+        () => stop,
+      );
+    }
+    final matches = unique.values
         .where((stop) {
           final matchesQuery = query.isEmpty ||
               stop.name.toLowerCase().contains(query) ||
-              stop.platform.toLowerCase().contains(query);
+              stop.platform.toLowerCase().contains(query) ||
+              stop.routeLabel.toLowerCase().contains(query) ||
+              stop.transportMode.toLowerCase().contains(query);
           final isNearby = _userLocation == null ||
-              (stop.distanceMeters ?? double.infinity) <= 8000;
+              (stop.distanceMeters ?? double.infinity) <=
+                  _nearbyRadiusKm * 1000;
           return matchesQuery && isNearby;
         })
         .take(25)
         .toList();
-    if (matches.isEmpty && query.isEmpty) return _stops.take(25).toList();
     return matches;
+  }
+
+  void _selectStop(Stop stop) {
+    setState(() => _selectedStop = stop);
+    final user = _userLocation;
+    if (!_mapReady) return;
+    if (user == null) {
+      _mapController.move(stop.position, 16);
+      return;
+    }
+    _mapController.fitCamera(CameraFit.bounds(
+      bounds: LatLngBounds.fromPoints([user, stop.position]),
+      padding: const EdgeInsets.all(48),
+      maxZoom: 16,
+    ));
+  }
+
+  void _zoomBy(double change) {
+    if (!_mapReady) return;
+    final next = (_zoom + change).clamp(4.0, 18.0);
+    _mapController.move(_mapController.camera.center, next);
+  }
+
+  Future<void> _openDirections(Stop stop) async {
+    final user = _userLocation;
+    if (user == null) return;
+    final uri = Uri.https('www.google.com', '/maps/dir/', {
+      'api': '1',
+      'origin': '${user.latitude},${user.longitude}',
+      'destination': '${stop.position.latitude},${stop.position.longitude}',
+      'travelmode': 'walking',
+    });
+    try {
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
+          mounted) {
+        setState(() => _liveMessage = 'Unable to open walking directions.');
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _liveMessage = 'Unable to open walking directions.');
+      }
+    }
   }
 
   String _timeLabel(DateTime time) {
@@ -515,6 +743,107 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       return _StopCluster(LatLng(lat, lon), group);
     }).toList();
   }
+}
+
+class _SelectedStopCard extends StatelessWidget {
+  final Stop stop;
+  final VoidCallback onClose;
+  final VoidCallback? onDirections;
+
+  const _SelectedStopCard({
+    required this.stop,
+    required this.onClose,
+    required this.onDirections,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final meters = stop.distanceMeters;
+    final walkMinutes =
+        meters == null ? null : math.max(1, (meters / 78).ceil());
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.gold.withValues(alpha: .4)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              stop.transportMode == 'Bus'
+                  ? Icons.directions_bus_rounded
+                  : Icons.directions_transit_rounded,
+              color: AppColors.gold,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(stop.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
+                  Text(
+                    '${stop.transportMode}${stop.routeLabel.isEmpty ? '' : ' · ${stop.routeLabel}'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11),
+                  ),
+                  if (walkMinutes != null)
+                    Text(
+                      '${meters! < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} · about $walkMinutes min walk',
+                      style: const TextStyle(
+                          color: AppColors.textSecondary, fontSize: 11),
+                    ),
+                ],
+              ),
+            ),
+            if (onDirections != null)
+              IconButton(
+                onPressed: onDirections,
+                tooltip: 'Open walking directions',
+                icon: const Icon(Icons.directions_walk_rounded,
+                    color: AppColors.gold),
+              ),
+            IconButton(
+              onPressed: onClose,
+              tooltip: 'Close route',
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MapButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  const _MapButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: AppColors.surface,
+        shape: const CircleBorder(),
+        elevation: 3,
+        child: IconButton(
+          onPressed: onPressed,
+          tooltip: tooltip,
+          icon: Icon(icon, color: AppColors.gold),
+        ),
+      );
 }
 
 class _StopCluster {

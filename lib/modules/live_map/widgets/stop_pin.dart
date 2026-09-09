@@ -24,8 +24,10 @@ class StopPin extends StatelessWidget {
             ),
           ],
         ),
-        child: const Icon(
-          Icons.directions_transit_rounded,
+        child: Icon(
+          stop.transportMode == 'Bus'
+              ? Icons.directions_bus_rounded
+              : Icons.directions_transit_rounded,
           color: Colors.white,
           size: 18,
         ),

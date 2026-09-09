@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../shared/models/stop.dart';
 import '../../../shared/theme/app_theme.dart';
-import 'status_chip.dart';
 
 /// Big countdown card: nearest stop name/platform, status chip, and the
 /// live mm:ss countdown to the next scheduled departure. This is the single widget to
@@ -54,44 +53,86 @@ class CountdownCard extends StatelessWidget {
                           fontSize: 12, color: AppColors.textSecondary)),
                 ],
               ),
-              StatusChip(urgency: urgency),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: urgency.color.withValues(alpha: .15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  stop.serviceStatusLabel,
+                  style: TextStyle(
+                    color: urgency.color,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 18),
-          const Text('TIME TO NEXT SCHEDULED DEPARTURE',
-              style: TextStyle(
+          Text(
+              stop.isOperating
+                  ? 'TIME TO NEXT SCHEDULED DEPARTURE'
+                  : 'CURRENT SERVICE STATUS',
+              style: const TextStyle(
                   fontSize: 11,
                   color: AppColors.textSecondary,
                   letterSpacing: 1)),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(_mm,
-                  style: const TextStyle(
-                      fontSize: 44, fontWeight: FontWeight.w800)),
-              const Text('m ',
-                  style:
-                      TextStyle(fontSize: 18, color: AppColors.textSecondary)),
-              Text(_ss,
-                  style: const TextStyle(
-                      fontSize: 44, fontWeight: FontWeight.w800)),
-              const Text('s',
-                  style:
-                      TextStyle(fontSize: 18, color: AppColors.textSecondary)),
-            ],
-          ),
+          if (!stop.isOperating)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('OUT OF SERVICE',
+                  style: TextStyle(
+                      color: AppColors.critical,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900)),
+            )
+          else if (!stop.hasDepartureData)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('ETA UNAVAILABLE',
+                  style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800)),
+            )
+          else
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(_mm,
+                    style: const TextStyle(
+                        fontSize: 44, fontWeight: FontWeight.w800)),
+                const Text('m ',
+                    style: TextStyle(
+                        fontSize: 18, color: AppColors.textSecondary)),
+                Text(_ss,
+                    style: const TextStyle(
+                        fontSize: 44, fontWeight: FontWeight.w800)),
+                const Text('s',
+                    style: TextStyle(
+                        fontSize: 18, color: AppColors.textSecondary)),
+              ],
+            ),
           const SizedBox(height: 4),
           Text(
-            stop.liveRailEstimate == null
-                ? 'Live rail estimate unavailable · showing official schedule'
-                : 'Experimental live estimate: ${stop.liveRailEstimate}',
+            stop.transportMode == 'Bus'
+                ? (stop.hasDepartureData
+                    ? 'Estimated from the latest live bus position'
+                    : 'Official bus stop · live ETA unavailable')
+                : (stop.liveRailEstimate == null
+                    ? 'Live rail estimate unavailable · showing official schedule'
+                    : 'Experimental live estimate: ${stop.liveRailEstimate}'),
             style:
                 const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
           const SizedBox(height: 4),
           Text(
-            'Last scheduled service: ${stop.lastService} tonight',
+            stop.transportMode == 'Bus'
+                ? (stop.routeLabel.isEmpty
+                    ? 'Bus route information unavailable'
+                    : 'Routes: ${stop.routeLabel}')
+                : 'Last scheduled service: ${stop.lastService}',
             style:
                 const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),

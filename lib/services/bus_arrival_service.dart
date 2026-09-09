@@ -15,13 +15,49 @@ class BusArrivalService {
 
   final Map<String, Future<_BusSchedule>> _cache = {};
 
+  /// Nearby official bus stops even when no vehicle can be matched to an ETA.
+  Future<List<Stop>> nearbyStops({
+    required LatLng userLocation,
+    double radiusMeters = 2000,
+    String category = 'rapid-bus-kl',
+  }) async {
+    final schedule = await _scheduleFor(category);
+    const distance = Distance();
+    final stops = schedule.stops.values
+        .map((stop) {
+          final position = LatLng(stop.lat, stop.lon);
+          final meters = distance.as(LengthUnit.Meter, userLocation, position);
+          final labels =
+              schedule.routeLabelsByStop[stop.stopId] ?? const <String>[];
+          final routeLabel = labels.take(3).join(' · ');
+          return Stop(
+            name: stop.name,
+            platform:
+                routeLabel.isEmpty ? 'Bus stop' : 'Bus stop · $routeLabel',
+            position: position,
+            timeToDeparture: Duration.zero,
+            urgency: ServiceUrgency.onTime,
+            gtfsStopId: stop.stopId,
+            distanceMeters: meters,
+            transportMode: 'Bus',
+            routeLabel: routeLabel,
+            hasDepartureData: false,
+          );
+        })
+        .where(
+            (stop) => (stop.distanceMeters ?? double.infinity) <= radiusMeters)
+        .toList()
+      ..sort((a, b) => a.distanceMeters!.compareTo(b.distanceMeters!));
+    return stops.take(40).toList();
+  }
+
   Future<List<BusArrivalEstimate>> estimateArrivals({
     required List<TransitVehicle> vehicles,
     required LatLng userLocation,
     String category = 'rapid-bus-kl',
   }) async {
     if (vehicles.isEmpty) return const [];
-    final schedule = await _cache.putIfAbsent(category, () => _load(category));
+    final schedule = await _scheduleFor(category);
     const distance = Distance();
     final estimates = <BusArrivalEstimate>[];
     for (final vehicle in vehicles) {
@@ -71,6 +107,10 @@ class BusArrivalService {
             gtfsStopId: gtfsStop.stopId,
             distanceMeters:
                 distance.as(LengthUnit.Meter, userLocation, stopPosition),
+            transportMode: 'Bus',
+            routeLabel: routeLabel,
+            hasDepartureData: true,
+            isOperating: true,
           ),
           routeLabel: routeLabel,
           vehicleId: vehicle.id,
@@ -114,6 +154,15 @@ class BusArrivalService {
     return closestMeters <= 2000 ? closestIndex : -1;
   }
 
+  Future<_BusSchedule> _scheduleFor(String category) async {
+    try {
+      return await _cache.putIfAbsent(category, () => _load(category));
+    } catch (_) {
+      _cache.remove(category);
+      rethrow;
+    }
+  }
+
   Future<_BusSchedule> _load(String category) async {
     final results = await Future.wait([
       GtfsService.fetchStops(category: category),
@@ -129,15 +178,34 @@ class BusArrivalService {
     for (final times in byTrip.values) {
       times.sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
     }
+    final trips = results[2] as List<GtfsTrip>;
+    final routes = {
+      for (final route in results[1] as List<GtfsRoute>) route.routeId: route
+    };
+    final routeByTrip = {
+      for (final trip in trips) trip.tripId: routes[trip.routeId],
+    };
+    final labelsByStop = <String, Set<String>>{};
+    for (final entry in byTrip.entries) {
+      final route = routeByTrip[entry.key];
+      if (route == null || route.displayName.isEmpty) continue;
+      for (final time in entry.value) {
+        labelsByStop
+            .putIfAbsent(time.stopId, () => <String>{})
+            .add(route.displayName);
+      }
+    }
     return _BusSchedule(
       stops: {
         for (final stop in results[0] as List<GtfsStop>) stop.stopId: stop
       },
-      routes: {
-        for (final route in results[1] as List<GtfsRoute>) route.routeId: route
-      },
-      trips: results[2] as List<GtfsTrip>,
+      routes: routes,
+      trips: trips,
       timesByTrip: byTrip,
+      routeLabelsByStop: {
+        for (final entry in labelsByStop.entries)
+          entry.key: (entry.value.toList()..sort()),
+      },
     );
   }
 }
@@ -147,12 +215,14 @@ class _BusSchedule {
   final Map<String, GtfsRoute> routes;
   final List<GtfsTrip> trips;
   final Map<String, List<GtfsStopTime>> timesByTrip;
+  final Map<String, List<String>> routeLabelsByStop;
 
   const _BusSchedule({
     required this.stops,
     required this.routes,
     required this.trips,
     required this.timesByTrip,
+    required this.routeLabelsByStop,
   });
 
   GtfsTrip? matchTrip(String realtimeTripId) {

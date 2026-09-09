@@ -17,6 +17,10 @@ class Stop {
   final String lastService;
   final String? liveRailEstimate;
   final double? distanceMeters;
+  final String transportMode;
+  final String routeLabel;
+  final bool hasDepartureData;
+  final bool isOperating;
 
   const Stop({
     required this.name,
@@ -28,6 +32,10 @@ class Stop {
     this.lastService = '—',
     this.liveRailEstimate,
     this.distanceMeters,
+    this.transportMode = 'Rail',
+    this.routeLabel = '',
+    this.hasDepartureData = true,
+    this.isOperating = true,
   });
 
   Stop copyWith({
@@ -40,6 +48,10 @@ class Stop {
     String? lastService,
     String? liveRailEstimate,
     double? distanceMeters,
+    String? transportMode,
+    String? routeLabel,
+    bool? hasDepartureData,
+    bool? isOperating,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -51,14 +63,26 @@ class Stop {
       lastService: lastService ?? this.lastService,
       liveRailEstimate: liveRailEstimate ?? this.liveRailEstimate,
       distanceMeters: distanceMeters ?? this.distanceMeters,
+      transportMode: transportMode ?? this.transportMode,
+      routeLabel: routeLabel ?? this.routeLabel,
+      hasDepartureData: hasDepartureData ?? this.hasDepartureData,
+      isOperating: isOperating ?? this.isOperating,
     );
   }
 
   String get formattedCountdown {
+    if (!isOperating) return 'Out of service';
+    if (!hasDepartureData) return 'ETA unavailable';
     if (timeToDeparture <= Duration.zero) return 'No more today';
     final h = timeToDeparture.inHours;
     final m = timeToDeparture.inMinutes.remainder(60);
     final s = timeToDeparture.inSeconds.remainder(60);
     return h > 0 ? '${h}h ${m}m' : '${m}m ${s.toString().padLeft(2, '0')}s';
+  }
+
+  String get serviceStatusLabel {
+    if (!isOperating) return 'OUT OF SERVICE';
+    if (!hasDepartureData) return 'SCHEDULED STOP';
+    return urgency.label;
   }
 }

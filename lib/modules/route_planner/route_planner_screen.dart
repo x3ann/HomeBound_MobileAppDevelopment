@@ -65,7 +65,14 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               _originSuggestions = const [];
             }),
           ),
-        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.center,
+          child: IconButton.filledTonal(
+            onPressed: _swapLocations,
+            tooltip: 'Swap origin and destination',
+            icon: const Icon(Icons.swap_vert_rounded),
+          ),
+        ),
         LocationField(
             icon: Icons.location_on_rounded,
             hint: 'Destination',
@@ -115,6 +122,14 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               '${_originController.text.trim()} → ${_destinationController.text.trim()}',
               style: const TextStyle(fontSize: 13, color: Color(0xFF9BA0C2))),
           const SizedBox(height: 12),
+          if (_routes.isNotEmpty)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 10),
+              child: Text(
+                'Best route is ranked by total journey time and number of transfers.',
+                style: TextStyle(fontSize: 11, color: Color(0xFF9BA0C2)),
+              ),
+            ),
           if (!_planning && _routes.isEmpty)
             const Text(
                 'No scheduled rail journey was found for these stations today.',
@@ -124,6 +139,19 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
         ],
       ],
     );
+  }
+
+  void _swapLocations() {
+    final origin = _originController.text;
+    _originController.text = _destinationController.text;
+    _destinationController.text = origin;
+    setState(() {
+      _originSuggestions = const [];
+      _destinationSuggestions = const [];
+      _routes = const [];
+      _searched = false;
+      _validationMessage = null;
+    });
   }
 
   Future<void> _fillCurrentLocation() async {
@@ -215,7 +243,8 @@ class _SuggestionList extends StatelessWidget {
                     leading: const Icon(Icons.train_rounded, size: 18),
                     title:
                         Text(stop.name, style: const TextStyle(fontSize: 14)),
-                    subtitle: Text(stop.platform,
+                    subtitle: Text(
+                        '${stop.transportMode} · ${stop.routeLabel.isEmpty ? stop.platform : stop.routeLabel}',
                         style: const TextStyle(fontSize: 11)),
                     onTap: () => onSelected(stop),
                   ))

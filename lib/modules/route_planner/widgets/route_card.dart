@@ -29,7 +29,8 @@ class RouteCard extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: route.status.color.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(20)),
-                child: Text(route.status.label,
+                child: Text(
+                    route.isRecommended ? 'BEST ROUTE' : route.status.label,
                     style: TextStyle(
                         color: route.status.color,
                         fontSize: 10,
@@ -46,6 +47,26 @@ class RouteCard extends StatelessWidget {
           Text(route.etaSummary,
               style: const TextStyle(
                   fontSize: 13, color: AppColors.textSecondary)),
+          if (route.totalMinutes > 0) ...[
+            const SizedBox(height: 9),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                _DetailChip(
+                    icon: Icons.schedule_rounded,
+                    label: '${route.totalMinutes} min total'),
+                _DetailChip(
+                    icon: Icons.sync_alt_rounded,
+                    label:
+                        '${route.transferCount} transfer${route.transferCount == 1 ? '' : 's'}'),
+                if (route.arrivalTime.isNotEmpty)
+                  _DetailChip(
+                      icon: Icons.flag_rounded,
+                      label: 'Arrive ${route.arrivalTime}'),
+              ],
+            ),
+          ],
           if (route.steps.isNotEmpty) ...[
             const SizedBox(height: 10),
             ...route.steps.map((step) => Padding(
@@ -74,4 +95,30 @@ class RouteCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DetailChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _DetailChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceAlt,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: AppColors.gold),
+            const SizedBox(width: 4),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 10, color: AppColors.textSecondary)),
+          ],
+        ),
+      );
 }
