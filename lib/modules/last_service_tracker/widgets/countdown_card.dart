@@ -72,20 +72,20 @@ class CountdownCard extends StatelessWidget {
                       fontSize: 44, fontWeight: FontWeight.w800)),
               const Text('m ',
                   style:
-                      TextStyle(fontSize: 18, color: AppColors.textSecondary)),
+                  TextStyle(fontSize: 18, color: AppColors.textSecondary)),
               Text(_ss,
                   style: const TextStyle(
                       fontSize: 44, fontWeight: FontWeight.w800)),
               const Text('s',
                   style:
-                      TextStyle(fontSize: 18, color: AppColors.textSecondary)),
+                  TextStyle(fontSize: 18, color: AppColors.textSecondary)),
             ],
           ),
           const SizedBox(height: 4),
           Text(
-            'Last scheduled service: ${MockData.lastTrainTonight} tonight',
+            'Last scheduled service: ${stop.lastService} tonight',
             style:
-                const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
         ],
       ),
