@@ -441,8 +441,15 @@ class GtfsService {
 
     final content =
         utf8.decode(file.content as List<int>, allowMalformed: true);
+    return parseCsvContent(content);
+  }
+
+  /// Normalizes publisher line endings before parsing. Without this, a CRLF
+  /// feed can be truncated when the first quoted field is encountered.
+  static List<List<dynamic>> parseCsvContent(String content) {
+    final normalized = content.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     return const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
-        .convert(content);
+        .convert(normalized);
   }
 
   static Future<Archive> _archiveFor(String category) {

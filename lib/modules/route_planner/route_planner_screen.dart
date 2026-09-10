@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../shared/models/route_model.dart';
 import '../../services/location_service.dart';
+import '../../services/bus_arrival_service.dart';
 import '../../services/place_search_service.dart';
 import '../../services/saved_place_service.dart';
 import '../../services/transit_repository.dart';
@@ -16,7 +17,14 @@ import 'widgets/route_card.dart';
 /// can still tap "Use current location" again to refresh it, or type an
 /// origin manually.
 class RoutePlannerScreen extends StatefulWidget {
-  const RoutePlannerScreen({super.key});
+  final Stop? initialOrigin;
+  final Stop? initialDestination;
+
+  const RoutePlannerScreen({
+    super.key,
+    this.initialOrigin,
+    this.initialDestination,
+  });
 
   @override
   State<RoutePlannerScreen> createState() => _RoutePlannerScreenState();
@@ -45,7 +53,17 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   void initState() {
     super.initState();
     _loadSavedPlaces();
-    _fillCurrentLocation();
+    final initialOrigin = widget.initialOrigin;
+    final initialDestination = widget.initialDestination;
+    if (initialOrigin != null && initialDestination != null) {
+      _selectedOrigin = initialOrigin;
+      _selectedDestination = initialDestination;
+      _originController.text = initialOrigin.name;
+      _destinationController.text = initialDestination.name;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _findRoutes());
+    } else {
+      _fillCurrentLocation();
+    }
   }
 
   @override
@@ -181,7 +199,7 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
             ),
           if (!_planning && _routes.isEmpty)
             const Text(
-                'No scheduled rail journey was found for these stations today.',
+                'No scheduled rail or direct bus journey was found for these locations today.',
                 style: TextStyle(fontSize: 13, color: Color(0xFF9BA0C2)))
           else
             ..._routes.asMap().entries.map((entry) => RouteCard(
@@ -320,12 +338,13 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   Future<List<Stop>> _searchSuggestions(String query) async {
     final results = await Future.wait([
       TransitRepository.instance.searchStops(query),
+      BusArrivalService.instance.searchScheduledStops(query),
       _placeSearch.search(query, near: _currentLocation?.position).catchError(
             (_) => <Stop>[],
           ),
     ]);
     final unique = <String, Stop>{};
-    for (final stop in [...results[0], ...results[1]]) {
+    for (final stop in [...results[0], ...results[1], ...results[2]]) {
       unique.putIfAbsent(
         '${stop.name.toLowerCase()}|${stop.position.latitude.toStringAsFixed(4)}|${stop.position.longitude.toStringAsFixed(4)}',
         () => stop,
@@ -346,24 +365,57 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   Future<void> _saveCurrentOrigin() async {
     final origin = _selectedOrigin;
     if (origin == null) return;
+    final labelController = TextEditingController();
     final slot = await showDialog<String>(
       context: context,
-      builder: (context) => SimpleDialog(
+      builder: (context) => AlertDialog(
         title: const Text('Save origin as'),
-        children: [
-          for (final value in const ['Home', 'Work', 'Other'])
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, value),
-              child: ListTile(
-                leading: Icon(_savedPlaceIcon(value)),
-                title: Text(value),
-                subtitle: Text(origin.name,
-                    maxLines: 1, overflow: TextOverflow.ellipsis),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(origin.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final value in const ['Home', 'Work'])
+                  ActionChip(
+                    avatar: Icon(_savedPlaceIcon(value), size: 17),
+                    label: Text(value),
+                    onPressed: () => Navigator.pop(context, value),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: labelController,
+              autofocus: true,
+              maxLength: 24,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Custom label',
+                hintText: 'Example: Campus or Mum’s house',
               ),
             ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final label = labelController.text.trim();
+              if (label.isNotEmpty) Navigator.pop(context, label);
+            },
+            child: const Text('Save'),
+          ),
         ],
       ),
     );
+    labelController.dispose();
     if (slot == null) return;
     await _savedPlaceService.save(SavedPlace(
       slot: slot,

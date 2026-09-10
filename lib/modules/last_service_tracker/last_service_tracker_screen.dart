@@ -17,6 +17,7 @@ import 'widgets/countdown_card.dart';
 import 'widgets/live_map_preview_card.dart';
 import 'widgets/stat_tile.dart';
 import 'widgets/stop_tile.dart';
+import 'widgets/transit_timetable_sheet.dart';
 
 /// MODULE: Last Service Tracker (Chung Wei Xean)
 /// Loads stops from TransitRepository (live GTFS feed from
@@ -38,9 +39,12 @@ class LastServiceTrackerScreen extends StatefulWidget {
       _LastServiceTrackerScreenState();
 }
 
-class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
+class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
+    with WidgetsBindingObserver {
   Timer? _timer;
   Timer? _busTimer;
+  Timer? _clockTimer;
+  DateTime _lastClockReading = DateTime.now();
 
   bool _loading = true;
   bool _locating = false;
@@ -63,7 +67,27 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
+    _clockTimer =
+        Timer.periodic(const Duration(seconds: 2), (_) => _checkDeviceClock());
+  }
+
+  void _checkDeviceClock() {
+    final now = DateTime.now();
+    final elapsed = now.difference(_lastClockReading).inSeconds;
+    _lastClockReading = now;
+    if (elapsed < 0 || elapsed > 7) {
+      _refreshExpiredSchedule();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _lastClockReading = DateTime.now();
+      _refreshExpiredSchedule();
+    }
   }
 
   Future<void> _load() async {
@@ -127,6 +151,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
   Future<void> _refreshExpiredSchedule() async {
     if (_refreshingExpired) return;
     _refreshingExpired = true;
+    BusArrivalService.instance.clearCache();
     final result = await TransitRepository.instance.getNearbyStops(
       forceRefresh: true,
     );
@@ -320,10 +345,79 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
     );
   }
 
+  Future<List<Stop>> _loadFullTimetable() async {
+    final groups = await Future.wait<List<Stop>>([
+      TransitRepository.instance.getRailTimetableEntries(),
+      BusArrivalService.instance
+          .scheduledStops(category: 'rapid-bus-kl')
+          .catchError((_) => <Stop>[]),
+      BusArrivalService.instance
+          .scheduledStops(category: 'rapid-bus-mrtfeeder')
+          .catchError((_) => <Stop>[]),
+    ]);
+    final unique = <String, Stop>{};
+    for (final stop in groups.expand((group) => group)) {
+      unique.putIfAbsent(
+        '${stop.transportMode}|${stop.gtfsStopId ?? stop.name}|${stop.routeLabel}',
+        () => stop,
+      );
+    }
+    final stops = unique.values.toList()
+      ..sort((a, b) {
+        final byMode = a.transportMode.compareTo(b.transportMode);
+        return byMode != 0 ? byMode : a.name.compareTo(b.name);
+      });
+    return stops;
+  }
+
+  void _openFullTimetable() {
+    final timetable = _loadFullTimetable();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => FutureBuilder<List<Stop>>(
+        future: timetable,
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            return TransitTimetableSheet(stops: snapshot.data!);
+          }
+          final message = snapshot.hasError
+              ? 'The official timetable could not be loaded. Close this panel and try again.'
+              : 'Loading rail, bus, and feeder schedules…';
+          return SafeArea(
+            child: Container(
+              height: MediaQuery.sizeOf(context).height * .45,
+              decoration: const BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+              ),
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!snapshot.hasError) const CircularProgressIndicator(),
+                      if (!snapshot.hasError) const SizedBox(height: 18),
+                      Text(message, textAlign: TextAlign.center),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _busTimer?.cancel();
+    _clockTimer?.cancel();
     super.dispose();
   }
 
@@ -548,6 +642,12 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _openFullTimetable,
+            icon: const Icon(Icons.schedule_rounded),
+            label: const Text('View full service timetable'),
           ),
           const SizedBox(height: 20),
           const Text(

@@ -8,6 +8,16 @@ import 'package:homebound/shared/theme/app_theme.dart';
 import 'package:latlong2/latlong.dart';
 
 void main() {
+  test('GTFS CSV parser keeps rows after quoted CRLF fields', () {
+    final rows = GtfsService.parseCsvContent(
+      'id,name\r\n1,Before\r\n2,"MITSUI OUTLET , KLIA 2"\r\n3,After\r\n',
+    );
+
+    expect(rows, hasLength(4));
+    expect(rows[2][1], 'MITSUI OUTLET , KLIA 2');
+    expect(rows[3], ['3', 'After']);
+  });
+
   test('orders official stops by distance and records distance', () {
     const origin = LatLng(3.1390, 101.6869);
     const near = Stop(

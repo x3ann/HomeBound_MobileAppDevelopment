@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/delay_prediction_service.dart';
+import '../../services/bus_arrival_service.dart';
 import '../../services/transit_repository.dart';
 import '../../shared/models/delay_prediction.dart';
 import '../../shared/models/stop.dart';
@@ -9,7 +10,9 @@ import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/data_source_badge.dart';
 
 class AiDelayPredictionScreen extends StatefulWidget {
-  const AiDelayPredictionScreen({super.key});
+  final void Function(Stop origin, Stop destination)? onGoNow;
+
+  const AiDelayPredictionScreen({super.key, this.onGoNow});
 
   @override
   State<AiDelayPredictionScreen> createState() =>
@@ -45,7 +48,27 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
       _loadError = null;
     });
     try {
-      final stations = await _repository.getStationDirectory();
+      final groups = await Future.wait<List<Stop>>([
+        _repository.getStationDirectory(),
+        BusArrivalService.instance
+            .scheduledStops(category: 'rapid-bus-kl')
+            .catchError((_) => <Stop>[]),
+        BusArrivalService.instance
+            .scheduledStops(category: 'rapid-bus-mrtfeeder')
+            .catchError((_) => <Stop>[]),
+      ]);
+      final unique = <String, Stop>{};
+      for (final station in groups.expand((group) => group)) {
+        unique.putIfAbsent(
+          '${station.transportMode}|${station.gtfsStopId ?? station.name}|${station.routeLabel}',
+          () => station,
+        );
+      }
+      final stations = unique.values.toList()
+        ..sort((a, b) {
+          final byMode = a.transportMode.compareTo(b.transportMode);
+          return byMode != 0 ? byMode : a.name.compareTo(b.name);
+        });
       if (stations.isEmpty) {
         throw const FormatException('The official station directory is empty.');
       }
@@ -58,7 +81,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _loadError = 'Unable to load the official station directory.';
+        _loadError = 'Unable to load the official stop directory.';
         _loadingStations = false;
       });
     }
@@ -71,7 +94,8 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
       _showMessage('Select an origin and destination.');
       return;
     }
-    if (origin.gtfsStopId == destination.gtfsStopId) {
+    if (origin.gtfsStopId == destination.gtfsStopId &&
+        origin.transportMode == destination.transportMode) {
       _showMessage('Origin and destination cannot be the same.');
       return;
     }
@@ -185,6 +209,22 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
                       if (_prediction case final prediction?) ...[
                         const SizedBox(height: 28),
                         _resultCard(prediction),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _fromStation == null ||
+                                    _toStation == null ||
+                                    widget.onGoNow == null
+                                ? null
+                                : () => widget.onGoNow!(
+                                      _fromStation!,
+                                      _toStation!,
+                                    ),
+                            icon: const Icon(Icons.directions_rounded),
+                            label: const Text('Go now · view directions'),
+                          ),
+                        ),
                         const SizedBox(height: 14),
                         _detailsCard(prediction),
                       ],

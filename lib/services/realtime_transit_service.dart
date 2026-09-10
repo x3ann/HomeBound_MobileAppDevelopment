@@ -30,7 +30,13 @@ class RealtimeTransitService {
       throw http.ClientException(
           'Realtime API returned ${response.statusCode}');
     }
-    return parseVehicles(response.bodyBytes, category: category);
+    final now = DateTime.now();
+    return parseVehicles(response.bodyBytes, category: category)
+        .where((vehicle) =>
+            vehicle.updatedAt
+                .isAfter(now.subtract(const Duration(minutes: 3))) &&
+            vehicle.updatedAt.isBefore(now.add(const Duration(minutes: 1))))
+        .toList();
   }
 
   /// Parses a complete FeedMessage. FeedEntity is field 2 at the feed level;

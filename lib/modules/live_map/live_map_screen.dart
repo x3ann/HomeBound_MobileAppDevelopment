@@ -34,7 +34,8 @@ class LiveMapScreen extends StatefulWidget {
   State<LiveMapScreen> createState() => _LiveMapScreenState();
 }
 
-class _LiveMapScreenState extends State<LiveMapScreen> {
+class _LiveMapScreenState extends State<LiveMapScreen>
+    with WidgetsBindingObserver {
   final _mapController = MapController();
   final _searchController = TextEditingController();
   StreamSubscription<LatLng>? _locationSubscription;
@@ -71,11 +72,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   LatLng? _lastRoutedFrom;
   DateTime? _lastRouteAt;
   bool _initialFocusApplied = false;
+  bool _handlingClockChange = false;
+  bool _scheduleRefreshPending = false;
+  DateTime _lastClockReading = DateTime.now();
   final _walkingRoutes = WalkingRouteService();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _query = widget.initialQuery ?? '';
     _searchController.text = _query;
     if (_query.isNotEmpty) _modeFilter = 'Bus';
@@ -88,18 +93,59 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         Timer.periodic(const Duration(seconds: 30), (_) => _refreshVehicles());
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _stops.isEmpty) return;
+      final now = DateTime.now();
+      final elapsed = now.difference(_lastClockReading).inSeconds;
+      _lastClockReading = now;
+      if (elapsed < 0 || elapsed > 5) {
+        unawaited(_handleClockChange());
+        return;
+      }
+      var departureExpired = false;
       setState(() {
-        _stops = _stops
-            .map((stop) => stop.timeToDeparture > Duration.zero
-                ? stop.copyWith(
-                    timeToDeparture:
-                        stop.timeToDeparture - const Duration(seconds: 1))
-                : stop)
-            .toList();
+        _stops = _stops.map((stop) {
+          if (!stop.isOperating ||
+              !stop.hasDepartureData ||
+              stop.timeToDeparture <= Duration.zero) {
+            return stop;
+          }
+          final remaining = stop.timeToDeparture - const Duration(seconds: 1);
+          if (remaining <= Duration.zero) departureExpired = true;
+          return stop.copyWith(timeToDeparture: remaining);
+        }).toList();
       });
+      if (departureExpired && !_scheduleRefreshPending) {
+        _scheduleRefreshPending = true;
+        unawaited(_recalculateSchedule().whenComplete(
+          () => _scheduleRefreshPending = false,
+        ));
+      }
     });
     _scheduleTimer = Timer.periodic(
         const Duration(minutes: 1), (_) => _recalculateSchedule());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _lastClockReading = DateTime.now();
+      unawaited(_handleClockChange());
+    }
+  }
+
+  Future<void> _handleClockChange() async {
+    if (_handlingClockChange) return;
+    _handlingClockChange = true;
+    try {
+      BusArrivalService.instance.clearCache();
+      _lastBusStopAttempt = null;
+      _lastBusStopCenter = null;
+      await _recalculateSchedule();
+      final location = _userLocation;
+      if (location != null) await _refreshNearbyBusStops(location);
+      await _refreshVehicles();
+    } finally {
+      _handlingClockChange = false;
+    }
   }
 
   Future<void> _load() async {
@@ -127,11 +173,30 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (!mounted) return;
     final location = _userLocation;
     setState(() {
-      _stops = location == null
+      final updatedStops = location == null
           ? result.stops
           : TransitRepository.instance.sortByDistance(result.stops, location);
+      _stops = updatedStops;
+      final selected = _selectedStop;
+      if (selected != null && selected.transportMode != 'Bus') {
+        for (final stop in updatedStops) {
+          if (stop.gtfsStopId == selected.gtfsStopId) {
+            _selectedStop = stop;
+            break;
+          }
+        }
+      }
       _source = result.source;
     });
+  }
+
+  Future<void> _refreshLocation() async {
+    setState(() => _locationMessage = 'Refreshing your current location…');
+    await _startLocationTracking();
+    final location = _userLocation;
+    if (mounted && location != null && _mapReady) {
+      _mapController.move(location, 15);
+    }
   }
 
   Future<void> _startLocationTracking() async {
@@ -222,6 +287,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       if (!mounted) return;
       setState(() {
         _busStops = unique.values.toList();
+        final selected = _selectedStop;
+        if (selected != null && selected.transportMode == 'Bus') {
+          for (final stop in _busStops) {
+            if (stop.gtfsStopId == selected.gtfsStopId) {
+              _selectedStop = stop;
+              break;
+            }
+          }
+        }
         if (unique.isNotEmpty) _lastBusStopCenter = position;
       });
     } finally {
@@ -263,6 +337,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       if (!mounted) return;
       setState(() {
         _vehicles = vehicles;
+        if (vehicles.isEmpty) _busArrivals = const [];
         _lastVehicleUpdate = DateTime.now();
         _liveMessage = '${vehicles.length} live Rapid KL buses';
       });
@@ -278,7 +353,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   Future<void> _refreshBusArrivals() async {
     final location = _userLocation;
-    if (_loadingArrivals || location == null || _vehicles.isEmpty) return;
+    if (_loadingArrivals || location == null) return;
+    if (_vehicles.isEmpty) {
+      if (mounted && _busArrivals.isNotEmpty) {
+        setState(() => _busArrivals = const []);
+      }
+      return;
+    }
     _loadingArrivals = true;
     final estimates = <BusArrivalEstimate>[];
     try {
@@ -319,6 +400,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _locationSubscription?.cancel();
     _vehicleTimer?.cancel();
     _countdownTimer?.cancel();
@@ -434,18 +516,20 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           ],
         ),
       ),
-      if (_modeFilter != 'Bus') ...[
+      ...[
         const SizedBox(height: 8),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: DropdownButtonFormField<String>(
             initialValue: _lineFilter,
             isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'Rail line shown on map',
-              prefixIcon: Icon(Icons.route_rounded),
+            decoration: InputDecoration(
+              labelText: _modeFilter == 'Bus'
+                  ? 'Bus route shown on map'
+                  : 'Line shown on map',
+              prefixIcon: const Icon(Icons.route_rounded),
             ),
-            items: _availableRailLines
+            items: _availableLines
                 .map((line) => DropdownMenuItem(
                       value: line,
                       child: Text(
@@ -650,10 +734,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                         if (_userLocation != null)
                           _MapButton(
                               icon: Icons.my_location_rounded,
-                              tooltip: 'Center on me',
+                              tooltip: 'Refresh my location',
                               onPressed: () {
                                 setState(() => _selectedStop = null);
-                                _mapController.move(_userLocation!, 15);
+                                _refreshLocation();
                               }),
                       ],
                     ),
@@ -882,15 +966,24 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     });
   }
 
-  List<String> get _availableRailLines {
-    final lines = _railShapes
-        .where((shape) =>
-            _modeFilter == 'All' || shape.transportMode == _modeFilter)
-        .map((shape) => shape.routeLabel)
-        .toSet()
-        .toList()
-      ..sort();
-    return ['All', ...lines];
+  List<String> get _availableLines {
+    final lines = <String>{};
+    if (_modeFilter == 'All' || _modeFilter == 'Bus') {
+      for (final stop in _busStops) {
+        lines.addAll(stop.routeLabel
+            .split(' · ')
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty));
+      }
+    }
+    if (_modeFilter != 'Bus') {
+      lines.addAll(_railShapes
+          .where((shape) =>
+              _modeFilter == 'All' || shape.transportMode == _modeFilter)
+          .map((shape) => shape.routeLabel));
+    }
+    final sorted = lines.toList()..sort();
+    return ['All', ...sorted];
   }
 
   String _routeSearchKey(String value) => value
@@ -988,79 +1081,148 @@ class _SelectedStopCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.gold.withValues(alpha: .4)),
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              stop.transportMode == 'Bus'
-                  ? Icons.directions_bus_rounded
-                  : Icons.directions_transit_rounded,
-              color: AppColors.gold,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(stop.name,
-                      maxLines: 1,
+            Row(
+              children: [
+                Icon(
+                  stop.transportMode == 'Bus'
+                      ? Icons.directions_bus_rounded
+                      : Icons.directions_transit_rounded,
+                  color: AppColors.gold,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(stop.name,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w800)),
-                  Text(
-                    '${stop.transportMode}${stop.routeLabel.isEmpty ? '' : ' · ${stop.routeLabel}'}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: AppColors.textSecondary, fontSize: 11),
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w900)),
+                ),
+                if (onDirections != null)
+                  IconButton(
+                    onPressed: onDirections,
+                    tooltip: 'Open walking directions',
+                    icon: const Icon(Icons.directions_walk_rounded,
+                        color: AppColors.gold),
                   ),
-                  if (walkMinutes != null)
-                    Text(
-                      '${meters! < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} · about $walkMinutes min walk',
-                      style: const TextStyle(
-                          color: AppColors.textSecondary, fontSize: 11),
-                    ),
-                  if (loadingRoute)
-                    const Text('Finding a walking route along roads…',
-                        style: TextStyle(
-                            color: AppColors.textSecondary, fontSize: 11)),
-                  if (walkingRoute case final route?) ...[
-                    Text(
-                      '${(route.distanceMeters / 1000).toStringAsFixed(1)} km by road · ${math.max(1, route.duration.inMinutes)} min',
-                      style: const TextStyle(
-                          color: AppColors.textSecondary, fontSize: 11),
-                    ),
-                    if (route.instructions.isNotEmpty)
-                      Text(
-                        'Next: ${route.instructions.first}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: AppColors.textSecondary, fontSize: 11),
-                      ),
-                  ],
-                  if (routeMessage != null)
-                    Text(routeMessage!,
-                        style: const TextStyle(
-                            color: AppColors.warning, fontSize: 11)),
-                ],
-              ),
+                IconButton(
+                  onPressed: onClose,
+                  tooltip: 'Close station details',
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
             ),
-            if (onDirections != null)
-              IconButton(
-                onPressed: onDirections,
-                tooltip: 'Open walking directions',
-                icon: const Icon(Icons.directions_walk_rounded,
-                    color: AppColors.gold),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                _StopDetailPill(
+                    icon: Icons.category_outlined, label: stop.transportMode),
+                _StopDetailPill(
+                  icon: stop.isOperating
+                      ? Icons.check_circle_outline_rounded
+                      : Icons.nightlight_outlined,
+                  label: stop.serviceStatusLabel,
+                  color:
+                      stop.isOperating ? AppColors.success : AppColors.critical,
+                ),
+                _StopDetailPill(
+                  icon: Icons.schedule_rounded,
+                  label: stop.isOperating
+                      ? 'Next ${stop.formattedCountdown}'
+                      : 'Currently closed',
+                ),
+                if (stop.lastService != '—')
+                  _StopDetailPill(
+                    icon: Icons.last_page_rounded,
+                    label: 'Last ${stop.lastService}',
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              stop.routeLabel.isEmpty
+                  ? stop.platform
+                  : 'Lines/routes: ${stop.routeLabel}',
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 11, height: 1.3),
+            ),
+            if (walkMinutes != null)
+              Text(
+                'From you: ${meters! < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} · about $walkMinutes min walk',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
               ),
-            IconButton(
-              onPressed: onClose,
-              tooltip: 'Close route',
-              icon: const Icon(Icons.close_rounded),
+            if (loadingRoute)
+              const Text('Finding a walking route along roads…',
+                  style:
+                      TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+            if (walkingRoute case final route?) ...[
+              Text(
+                'Road route: ${(route.distanceMeters / 1000).toStringAsFixed(1)} km · ${math.max(1, route.duration.inMinutes)} min',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
+              ),
+              if (route.instructions.isNotEmpty)
+                Text(
+                  'Next direction: ${route.instructions.first}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11),
+                ),
+            ],
+            if (routeMessage != null)
+              Text(routeMessage!,
+                  style:
+                      const TextStyle(color: AppColors.warning, fontSize: 11)),
+            const SizedBox(height: 5),
+            Text(
+              'Stop ID: ${stop.gtfsStopId ?? 'Unavailable'} · '
+              '${stop.position.latitude.toStringAsFixed(5)}, ${stop.position.longitude.toStringAsFixed(5)}',
+              style:
+                  const TextStyle(color: AppColors.textSecondary, fontSize: 10),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+class _StopDetailPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  const _StopDetailPill({
+    required this.icon,
+    required this.label,
+    this.color = AppColors.gold,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: .12),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: color),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 10, color: color, fontWeight: FontWeight.w700)),
+          ],
+        ),
+      );
 }
 
 class _MapButton extends StatelessWidget {
