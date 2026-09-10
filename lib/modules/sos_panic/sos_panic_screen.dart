@@ -265,7 +265,21 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
     );
   }
 
-  Widget _statusCard() => _card(
+  Widget _statusCard() => AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: _isSosActive
+                ? const [Color(0xFF541D31), Color(0xFF271B45)]
+                : const [Color(0xFF172B47), Color(0xFF211F4A)],
+          ),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: (_isSosActive ? AppColors.critical : AppColors.success)
+                .withValues(alpha: .45),
+          ),
+        ),
         child: Row(
           children: [
             Icon(
@@ -307,25 +321,30 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
             height: 180,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: AppColors.critical.withValues(alpha: .15),
-              border: Border.all(
-                  color: AppColors.critical.withValues(alpha: .4), width: 12),
-            ),
-            padding: const EdgeInsets.all(12),
-            child: Container(
-              decoration: const BoxDecoration(
-                  shape: BoxShape.circle, color: AppColors.critical),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.sos_rounded, size: 54, color: Colors.white),
-                  Text(_isSosActive ? 'READY' : 'SOS',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w900)),
-                ],
+              gradient: const RadialGradient(
+                colors: [Color(0xFFFF6767), Color(0xFFC5203A)],
               ),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: .15), width: 10),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.critical.withValues(alpha: .38),
+                  blurRadius: 28,
+                  spreadRadius: 5,
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.sos_rounded, size: 58, color: Colors.white),
+                Text(_isSosActive ? 'ACTIVE' : 'HOLD',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.2)),
+              ],
             ),
           ),
         ),
@@ -338,23 +357,26 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
             const _CardTitle(
                 icon: Icons.phone_in_talk_rounded, text: 'Call when activated'),
             const SizedBox(height: 12),
-            SegmentedButton<_EmergencyTarget>(
-              segments: const [
-                ButtonSegment(
-                  value: _EmergencyTarget.emergencyServices,
-                  icon: Icon(Icons.local_police_rounded),
-                  label: Text(_emergencyNumber),
+            Row(
+              children: [
+                Expanded(
+                  child: _targetTile(
+                    target: _EmergencyTarget.emergencyServices,
+                    icon: Icons.local_police_rounded,
+                    title: _emergencyNumber,
+                    subtitle: 'Emergency',
+                  ),
                 ),
-                ButtonSegment(
-                  value: _EmergencyTarget.savedContact,
-                  icon: Icon(Icons.contact_phone_rounded),
-                  label: Text('Contact'),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _targetTile(
+                    target: _EmergencyTarget.savedContact,
+                    icon: Icons.contact_phone_rounded,
+                    title: 'Contact',
+                    subtitle: 'Saved number',
+                  ),
                 ),
               ],
-              selected: {_target},
-              onSelectionChanged: _isSosActive
-                  ? null
-                  : (selection) => setState(() => _target = selection.first),
             ),
             const SizedBox(height: 10),
             Text(
@@ -367,6 +389,60 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
           ],
         ),
       );
+
+  Widget _targetTile({
+    required _EmergencyTarget target,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    final selected = _target == target;
+    return Material(
+      color: selected
+          ? AppColors.gold.withValues(alpha: .14)
+          : AppColors.surfaceAlt,
+      borderRadius: BorderRadius.circular(15),
+      child: InkWell(
+        onTap: _isSosActive ? null : () => setState(() => _target = target),
+        borderRadius: BorderRadius.circular(15),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            border: Border.all(
+              color: selected ? AppColors.gold : AppColors.divider,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(icon,
+                  color: selected ? AppColors.gold : AppColors.textSecondary),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        maxLines: 1,
+                        style: const TextStyle(fontWeight: FontWeight.w800)),
+                    Text(subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 10)),
+                  ],
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_circle_rounded,
+                    size: 17, color: AppColors.gold),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _locationCard() {
     final location = _location;

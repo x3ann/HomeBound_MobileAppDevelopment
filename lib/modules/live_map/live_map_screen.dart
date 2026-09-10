@@ -64,6 +64,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   double _zoom = 14;
   double _nearbyRadiusKm = 2;
   String _modeFilter = 'All';
+  String _lineFilter = 'All';
   WalkingRoute? _walkingRoute;
   bool _loadingWalkingRoute = false;
   String? _walkingRouteMessage;
@@ -423,6 +424,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 selected: _modeFilter == mode,
                 onSelected: (_) => setState(() {
                   _modeFilter = mode;
+                  _lineFilter = 'All';
                   _selectedStop = null;
                   _walkingRoute = null;
                 }),
@@ -432,6 +434,35 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           ],
         ),
       ),
+      if (_modeFilter != 'Bus') ...[
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: DropdownButtonFormField<String>(
+            initialValue: _lineFilter,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Rail line shown on map',
+              prefixIcon: Icon(Icons.route_rounded),
+            ),
+            items: _availableRailLines
+                .map((line) => DropdownMenuItem(
+                      value: line,
+                      child: Text(
+                        line,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ))
+                .toList(),
+            onChanged: (line) => setState(() {
+              _lineFilter = line ?? 'All';
+              _selectedStop = null;
+              _walkingRoute = null;
+            }),
+          ),
+        ),
+      ],
       const SizedBox(height: 8),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -506,8 +537,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                                     .where((shape) =>
                                         shape.points.length > 1 &&
                                         (_modeFilter == 'All' ||
-                                            _modeForLabel(shape.routeLabel) ==
-                                                _modeFilter))
+                                            shape.transportMode ==
+                                                _modeFilter) &&
+                                        (_lineFilter == 'All' ||
+                                            shape.routeLabel == _lineFilter))
                                     .map((shape) => Polyline(
                                           points: shape.points,
                                           strokeWidth: 3,
@@ -746,7 +779,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               stop.transportMode
                   .toLowerCase()
                   .contains(_modeFilter.toLowerCase());
-          return matchesQuery && isNearby && matchesMode;
+          final matchesLine =
+              _lineFilter == 'All' || stop.routeLabel.contains(_lineFilter);
+          return matchesQuery && isNearby && matchesMode && matchesLine;
         })
         .take(25)
         .toList();
@@ -847,27 +882,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     });
   }
 
-  String _modeForLabel(String value) {
-    final upper = value.toUpperCase();
-    if (upper.contains('MONORAIL') || upper.contains('MRL')) return 'Monorail';
-    if (upper.contains('BRT')) return 'BRT';
-    if (upper.contains('MRT') ||
-        upper.contains('KAJANG') ||
-        upper.contains('PUTRAJAYA') ||
-        upper.contains('KGL') ||
-        upper.contains('PYL')) {
-      return 'MRT';
-    }
-    if (upper.contains('LRT') ||
-        upper.contains('KELANA') ||
-        upper.contains('AMPANG') ||
-        upper.contains('SRI PETALING') ||
-        upper.contains('KJL') ||
-        upper.contains('AGL') ||
-        upper.contains('SPL')) {
-      return 'LRT';
-    }
-    return 'Rail';
+  List<String> get _availableRailLines {
+    final lines = _railShapes
+        .where((shape) =>
+            _modeFilter == 'All' || shape.transportMode == _modeFilter)
+        .map((shape) => shape.routeLabel)
+        .toSet()
+        .toList()
+      ..sort();
+    return ['All', ...lines];
   }
 
   String _routeSearchKey(String value) => value
