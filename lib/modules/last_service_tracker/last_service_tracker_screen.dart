@@ -8,6 +8,7 @@ import '../../services/realtime_transit_service.dart';
 import '../../services/transit_repository.dart';
 import '../../services/location_service.dart';
 import '../../shared/models/stop.dart';
+import '../../shared/models/bus_arrival_estimate.dart';
 import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/data_source_badge.dart';
 import '../../screens/profile_screen.dart';
@@ -24,10 +25,12 @@ import 'widgets/stop_tile.dart';
 /// the "nearest stop" countdown are correct from the first frame.
 class LastServiceTrackerScreen extends StatefulWidget {
   final VoidCallback? onOpenLiveMap;
+  final ValueChanged<String>? onOpenBusRoute;
 
   const LastServiceTrackerScreen({
     super.key,
     this.onOpenLiveMap,
+    this.onOpenBusRoute,
   });
 
   @override
@@ -48,6 +51,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
   List<Stop> _railStops = const [];
   List<Stop> _busStops = const [];
   List<String> _nearbyBusRoutes = const [];
+  Map<String, BusArrivalEstimate> _nearbyBusEtas = const {};
   LatLng? _userLocation;
 
   TransitDataSource _source = TransitDataSource.unavailable;
@@ -211,6 +215,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
     final busStops = <Stop>[];
     final liveStops = <Stop>[];
     final nearbyRoutes = <String, double>{};
+    final routeEtas = <String, BusArrivalEstimate>{};
     const distance = Distance();
     try {
       for (final category in categories) {
@@ -220,6 +225,15 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
             radiusMeters: 2000,
             category: category,
           ));
+          for (final stop in busStops.where((stop) =>
+              stop.routeLabel.isNotEmpty && stop.distanceMeters != null)) {
+            for (final label in stop.routeLabel.split(' · ')) {
+              final previous = nearbyRoutes[label];
+              if (previous == null || stop.distanceMeters! < previous) {
+                nearbyRoutes[label] = stop.distanceMeters!;
+              }
+            }
+          }
         } catch (_) {
           // Keep results from other feeds when one static feed is unavailable.
         }
@@ -245,6 +259,13 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
             category: category,
           );
           liveStops.addAll(arrivals.map((arrival) => arrival.stop));
+          for (final arrival in arrivals) {
+            final key = _routeKey(arrival.routeLabel);
+            final current = routeEtas[key];
+            if (current == null || arrival.eta < current.eta) {
+              routeEtas[key] = arrival;
+            }
+          }
         } catch (_) {
           // Static bus stops remain useful without a live vehicle match.
         }
@@ -263,6 +284,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
         _busStops = unique.values.toList();
         _nearbyBusRoutes =
             sortedRoutes.take(8).map((entry) => entry.key).toList();
+        _nearbyBusEtas = routeEtas;
         _combineNearbyStops();
         _remaining =
             _stops.isEmpty ? Duration.zero : _featuredStop.timeToDeparture;
@@ -486,15 +508,23 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
             const SizedBox(height: 14),
             const Text('Nearby Bus Routes',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 3),
+            const Text(
+                'ETA combines official schedules with live bus positions.',
+                style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: _nearbyBusRoutes
-                  .map((route) => Chip(
+                  .map((route) => ActionChip(
                         avatar:
                             const Icon(Icons.directions_bus_rounded, size: 16),
-                        label: Text(route),
+                        label: Text(_nearbyBusEtas[_routeKey(route)] == null
+                            ? route
+                            : '$route · ${_nearbyBusEtas[_routeKey(route)]!.etaLabel}'),
+                        tooltip: 'Show route $route on the live map',
+                        onPressed: () => widget.onOpenBusRoute?.call(route),
                       ))
                   .toList(),
             ),
@@ -537,4 +567,11 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen> {
       ),
     );
   }
+
+  String _routeKey(String value) => value
+      .toUpperCase()
+      .replaceAll('RAPID KL', '')
+      .split('—')
+      .first
+      .replaceAll(RegExp(r'[^A-Z0-9]'), '');
 }

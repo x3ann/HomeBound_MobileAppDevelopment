@@ -27,8 +27,14 @@ class GtfsRoute {
     this.routeType,
   });
 
-  String get displayName =>
-      shortName.trim().isNotEmpty ? shortName.trim() : longName.trim();
+  String get displayName {
+    final short = shortName.trim();
+    final long = longName.trim();
+    if (short.isNotEmpty && long.isNotEmpty && short != long) {
+      return '$short — $long';
+    }
+    return short.isNotEmpty ? short : long;
+  }
 
   String get modeLabel {
     final text = '$shortName $longName'.toUpperCase();

@@ -64,6 +64,48 @@ void main() {
     expect(GtfsService.secondsIntoServiceDay(morning), 6 * 3600 + 900);
   });
 
+  test('calendar rules select only trips operating on the service date', () {
+    const trips = [
+      GtfsTrip(tripId: 'weekday-trip', routeId: '1', serviceId: 'weekday'),
+      GtfsTrip(tripId: 'weekend-trip', routeId: '1', serviceId: 'weekend'),
+    ];
+    const calendar = [
+      GtfsCalendarService(
+        serviceId: 'weekday',
+        monday: true,
+        tuesday: true,
+        wednesday: true,
+        thursday: true,
+        friday: true,
+        saturday: false,
+        sunday: false,
+        startDate: '20260101',
+        endDate: '20261231',
+      ),
+      GtfsCalendarService(
+        serviceId: 'weekend',
+        monday: false,
+        tuesday: false,
+        wednesday: false,
+        thursday: false,
+        friday: false,
+        saturday: true,
+        sunday: true,
+        startDate: '20260101',
+        endDate: '20261231',
+      ),
+    ];
+
+    final active = GtfsService.activeTripIds(
+      trips: trips,
+      calendar: calendar,
+      calendarDates: const [],
+      serviceDate: DateTime(2026, 9, 10),
+    );
+
+    expect(active, {'weekday-trip'});
+  });
+
   test('stop is out of service before the first departure', () {
     const stop = Stop(
       name: 'Station',
@@ -138,6 +180,14 @@ void main() {
     expect(mrt.modeLabel, 'MRT');
     expect(monorail.modeLabel, 'Monorail');
     expect(bus.modeLabel, 'Bus');
+    expect(mrt.displayName, 'KGL — Kajang Line');
+  });
+
+  test('station search text ignores common rail prefixes', () {
+    expect(
+      TransitRepository.normalizeSearchText('MRT Kepong Baru Station'),
+      'kepong baru',
+    );
   });
 
   test('route alternatives recommend the best arrival with transfer penalty',

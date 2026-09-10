@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import '../../shared/models/route_model.dart';
 import '../../services/location_service.dart';
+import '../../services/place_search_service.dart';
 import '../../services/transit_repository.dart';
 import '../../shared/models/stop.dart';
+import '../../shared/theme/app_theme.dart';
 import 'widgets/location_field.dart';
 import 'widgets/route_card.dart';
 
@@ -30,6 +32,10 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   int _originSearchVersion = 0;
   int _destinationSearchVersion = 0;
   List<RouteOption> _routes = const [];
+  Stop? _selectedOrigin;
+  Stop? _selectedDestination;
+  Stop? _currentLocation;
+  final _placeSearch = PlaceSearchService();
 
   @override
   void initState() {
@@ -56,12 +62,16 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
             icon: Icons.trip_origin,
             hint: 'Current location or origin stop',
             controller: _originController,
-            onChanged: _findOriginSuggestions),
+            onChanged: (value) {
+              _selectedOrigin = null;
+              _findOriginSuggestions(value);
+            }),
         if (_originSuggestions.isNotEmpty)
           _SuggestionList(
             stops: _originSuggestions,
             onSelected: (stop) => setState(() {
               _originController.text = stop.name;
+              _selectedOrigin = stop;
               _originSuggestions = const [];
             }),
           ),
@@ -77,12 +87,16 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
             icon: Icons.location_on_rounded,
             hint: 'Destination',
             controller: _destinationController,
-            onChanged: _findDestinationSuggestions),
+            onChanged: (value) {
+              _selectedDestination = null;
+              _findDestinationSuggestions(value);
+            }),
         if (_destinationSuggestions.isNotEmpty)
           _SuggestionList(
             stops: _destinationSuggestions,
             onSelected: (stop) => setState(() {
               _destinationController.text = stop.name;
+              _selectedDestination = stop;
               _destinationSuggestions = const [];
             }),
           ),
@@ -146,6 +160,9 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
     _originController.text = _destinationController.text;
     _destinationController.text = origin;
     setState(() {
+      final selectedOrigin = _selectedOrigin;
+      _selectedOrigin = _selectedDestination;
+      _selectedDestination = selectedOrigin;
       _originSuggestions = const [];
       _destinationSuggestions = const [];
       _routes = const [];
@@ -162,8 +179,18 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
     final result = await LocationService.instance.requestCurrentLocation();
     if (!mounted) return;
     if (result.status == LocationStatus.available) {
-      _originController.text =
-          'Current location (${result.position!.latitude.toStringAsFixed(4)}, ${result.position!.longitude.toStringAsFixed(4)})';
+      _currentLocation = Stop(
+        name:
+            'Current location (${result.position!.latitude.toStringAsFixed(4)}, ${result.position!.longitude.toStringAsFixed(4)})',
+        platform: 'Your live location',
+        position: result.position!,
+        timeToDeparture: Duration.zero,
+        urgency: ServiceUrgency.onTime,
+        transportMode: 'Place',
+        hasDepartureData: false,
+      );
+      _selectedOrigin = _currentLocation;
+      _originController.text = _currentLocation!.name;
     } else {
       _validationMessage = result.status == LocationStatus.disabled
           ? 'Turn on Location Services, or type your origin manually.'
@@ -187,8 +214,28 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
       _routes = const [];
     });
     try {
-      final routes =
-          await TransitRepository.instance.planRoute(origin, destination);
+      final originMatches = _selectedOrigin == null
+          ? await TransitRepository.instance.searchStops(origin)
+          : const <Stop>[];
+      final destinationMatches = _selectedDestination == null
+          ? await TransitRepository.instance.searchStops(destination)
+          : const <Stop>[];
+      final originStop = _selectedOrigin ??
+          (originMatches.isEmpty ? null : originMatches.first);
+      final destinationStop = _selectedDestination ??
+          (destinationMatches.isEmpty ? null : destinationMatches.first);
+      if (originStop == null || destinationStop == null) {
+        if (mounted) {
+          setState(() {
+            _searched = false;
+            _validationMessage =
+                'Choose an origin and destination from the suggestions.';
+          });
+        }
+        return;
+      }
+      final routes = await TransitRepository.instance
+          .planRouteBetweenStops(originStop, destinationStop);
       if (mounted) setState(() => _routes = routes);
     } catch (_) {
       if (mounted) {
@@ -206,7 +253,9 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
       setState(() => _originSuggestions = const []);
       return;
     }
-    final stops = await TransitRepository.instance.searchStops(query);
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted || request != _originSearchVersion) return;
+    final stops = await _searchSuggestions(query);
     if (!mounted || request != _originSearchVersion) return;
     setState(() => _originSuggestions = stops);
   }
@@ -217,9 +266,28 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
       setState(() => _destinationSuggestions = const []);
       return;
     }
-    final stops = await TransitRepository.instance.searchStops(query);
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted || request != _destinationSearchVersion) return;
+    final stops = await _searchSuggestions(query);
     if (!mounted || request != _destinationSearchVersion) return;
     setState(() => _destinationSuggestions = stops);
+  }
+
+  Future<List<Stop>> _searchSuggestions(String query) async {
+    final results = await Future.wait([
+      TransitRepository.instance.searchStops(query),
+      _placeSearch.search(query, near: _currentLocation?.position).catchError(
+            (_) => <Stop>[],
+          ),
+    ]);
+    final unique = <String, Stop>{};
+    for (final stop in [...results[0], ...results[1]]) {
+      unique.putIfAbsent(
+        '${stop.name.toLowerCase()}|${stop.position.latitude.toStringAsFixed(4)}|${stop.position.longitude.toStringAsFixed(4)}',
+        () => stop,
+      );
+    }
+    return unique.values.take(8).toList();
   }
 }
 
@@ -240,7 +308,12 @@ class _SuggestionList extends StatelessWidget {
           children: stops
               .map((stop) => ListTile(
                     dense: true,
-                    leading: const Icon(Icons.train_rounded, size: 18),
+                    leading: Icon(
+                      stop.transportMode == 'Place'
+                          ? Icons.place_rounded
+                          : Icons.train_rounded,
+                      size: 18,
+                    ),
                     title:
                         Text(stop.name, style: const TextStyle(fontSize: 14)),
                     subtitle: Text(

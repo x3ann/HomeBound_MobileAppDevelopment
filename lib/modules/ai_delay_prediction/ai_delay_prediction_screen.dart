@@ -28,6 +28,8 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
   bool _loadingStations = true;
   bool _predicting = false;
   String? _loadError;
+  String _modeFilter = 'All';
+  String? _lineFilter;
 
   @override
   void initState() {
@@ -185,6 +187,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
   }
 
   Widget _routeSelector() {
+    final filteredStations = _filteredStations;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -194,10 +197,19 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
       ),
       child: Column(
         children: [
+          Row(
+            children: [
+              Expanded(child: _modeDropdown()),
+              const SizedBox(width: 10),
+              Expanded(child: _lineDropdown()),
+            ],
+          ),
+          const SizedBox(height: 14),
           _stationDropdown(
             label: 'FROM',
             value: _fromStation,
             hint: 'Select origin station',
+            stations: filteredStations,
             onChanged: (value) => setState(() {
               _fromStation = value;
               _prediction = null;
@@ -212,6 +224,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
             label: 'TO',
             value: _toStation,
             hint: 'Select destination station',
+            stations: filteredStations,
             onChanged: (value) => setState(() {
               _toStation = value;
               _prediction = null;
@@ -227,6 +240,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
     required Stop? value,
     required String hint,
     required ValueChanged<Stop?> onChanged,
+    required List<Stop> stations,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -243,7 +257,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
           isExpanded: true,
           dropdownColor: AppColors.surface,
           hint: Text(hint),
-          items: _stations
+          items: stations
               .map((station) => DropdownMenuItem(
                     value: station,
                     child: Text(station.name,
@@ -286,6 +300,16 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
             ],
           ),
           const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _metric(
+              'Total estimated journey time',
+              result.totalEstimatedMinutes <= 0
+                  ? 'Unavailable'
+                  : '${result.totalEstimatedMinutes} min',
+            ),
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(child: _metric('Weather', result.weatherSummary)),
@@ -303,6 +327,88 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
       ),
     );
   }
+
+  List<Stop> get _filteredStations => _stations.where((station) {
+        final modeMatches = _modeFilter == 'All' ||
+            station.transportMode
+                .toLowerCase()
+                .contains(_modeFilter.toLowerCase());
+        final lineMatches = _lineFilter == null ||
+            station.routeLabel
+                .toLowerCase()
+                .contains(_lineFilter!.toLowerCase());
+        return modeMatches && lineMatches;
+      }).toList();
+
+  List<String> get _modeOptions {
+    final values = <String>{};
+    for (final station in _stations) {
+      values.addAll(station.transportMode
+          .split('/')
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty && value != 'Rail'));
+    }
+    final sorted = values.toList()..sort();
+    return ['All', ...sorted];
+  }
+
+  List<String> get _lineOptions {
+    final values = <String>{};
+    for (final station in _stations) {
+      if (_modeFilter != 'All' &&
+          !station.transportMode
+              .toLowerCase()
+              .contains(_modeFilter.toLowerCase())) {
+        continue;
+      }
+      values.addAll(station.routeLabel
+          .split(' · ')
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty));
+    }
+    return values.toList()..sort();
+  }
+
+  Widget _modeDropdown() => DropdownButtonFormField<String>(
+        initialValue: _modeFilter,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: 'Transport type'),
+        items: _modeOptions
+            .map((mode) => DropdownMenuItem(value: mode, child: Text(mode)))
+            .toList(),
+        onChanged: (value) => setState(() {
+          _modeFilter = value ?? 'All';
+          _lineFilter = null;
+          _fromStation = null;
+          _toStation = null;
+          _prediction = null;
+        }),
+      );
+
+  Widget _lineDropdown() => DropdownButtonFormField<String>(
+        initialValue: _lineFilter,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: 'Line'),
+        hint: const Text('All lines'),
+        items: [
+          const DropdownMenuItem<String>(value: null, child: Text('All lines')),
+          ..._lineOptions.map(
+            (line) => DropdownMenuItem(
+                value: line,
+                child: Text(
+                  line,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                )),
+          ),
+        ],
+        onChanged: (value) => setState(() {
+          _lineFilter = value;
+          _fromStation = null;
+          _toStation = null;
+          _prediction = null;
+        }),
+      );
 
   Widget _metric(String title, String value) => Container(
         padding: const EdgeInsets.all(13),

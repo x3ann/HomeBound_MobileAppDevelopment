@@ -185,6 +185,49 @@ class GtfsService {
     return now.hour < cutoffHour ? seconds + 86400 : seconds;
   }
 
+  static String dateStamp(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
+
+  /// Resolves the trips operating on a service date from calendar rules and
+  /// date-specific additions/removals.
+  static Set<String> activeTripIds({
+    required List<GtfsTrip> trips,
+    required List<GtfsCalendarService> calendar,
+    required List<GtfsCalendarDate> calendarDates,
+    required DateTime serviceDate,
+  }) {
+    final stamp = dateStamp(serviceDate);
+    bool runs(GtfsCalendarService service) {
+      final inRange = (service.startDate.isEmpty ||
+              stamp.compareTo(service.startDate) >= 0) &&
+          (service.endDate.isEmpty || stamp.compareTo(service.endDate) <= 0);
+      if (!inRange) return false;
+      return switch (serviceDate.weekday) {
+        DateTime.monday => service.monday,
+        DateTime.tuesday => service.tuesday,
+        DateTime.wednesday => service.wednesday,
+        DateTime.thursday => service.thursday,
+        DateTime.friday => service.friday,
+        DateTime.saturday => service.saturday,
+        _ => service.sunday,
+      };
+    }
+
+    final serviceIds =
+        calendar.where(runs).map((item) => item.serviceId).toSet();
+    for (final exception in calendarDates.where((item) => item.date == stamp)) {
+      if (exception.exceptionType == 1) {
+        serviceIds.add(exception.serviceId);
+      } else {
+        serviceIds.remove(exception.serviceId);
+      }
+    }
+    return trips
+        .where((trip) => serviceIds.contains(trip.serviceId))
+        .map((trip) => trip.tripId)
+        .toSet();
+  }
+
   /// Fetches repeating trip windows used by the rail feed to describe
   /// frequent service without listing every departure as a separate trip.
   static Future<List<GtfsFrequency>> fetchFrequencies(

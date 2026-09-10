@@ -10,10 +10,12 @@ import '../../services/location_service.dart';
 import '../../services/bus_arrival_service.dart';
 import '../../services/realtime_transit_service.dart';
 import '../../services/transit_repository.dart';
+import '../../services/walking_route_service.dart';
 import '../../shared/models/stop.dart';
 import '../../shared/models/bus_arrival_estimate.dart';
 import '../../shared/models/transit_shape.dart';
 import '../../shared/models/transit_vehicle.dart';
+import '../../shared/models/walking_route.dart';
 import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/data_source_badge.dart';
 import 'widgets/stop_list_tile.dart';
@@ -24,7 +26,9 @@ import 'widgets/stop_pin.dart';
 /// no button tap required — so the map is centered on the user and stops
 /// are distance-sorted from the first frame.
 class LiveMapScreen extends StatefulWidget {
-  const LiveMapScreen({super.key});
+  final String? initialQuery;
+
+  const LiveMapScreen({super.key, this.initialQuery});
 
   @override
   State<LiveMapScreen> createState() => _LiveMapScreenState();
@@ -59,10 +63,21 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   DateTime? _lastVehicleUpdate;
   double _zoom = 14;
   double _nearbyRadiusKm = 2;
+  String _modeFilter = 'All';
+  WalkingRoute? _walkingRoute;
+  bool _loadingWalkingRoute = false;
+  String? _walkingRouteMessage;
+  LatLng? _lastRoutedFrom;
+  DateTime? _lastRouteAt;
+  bool _initialFocusApplied = false;
+  final _walkingRoutes = WalkingRouteService();
 
   @override
   void initState() {
     super.initState();
+    _query = widget.initialQuery ?? '';
+    _searchController.text = _query;
+    if (_query.isNotEmpty) _modeFilter = 'Bus';
     _load();
     _searchController
         .addListener(() => setState(() => _query = _searchController.text));
@@ -163,6 +178,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     }
     _refreshBusArrivals();
     _refreshNearbyBusStops(position);
+    _maybeRefreshWalkingRoute(position);
   }
 
   Future<void> _refreshNearbyBusStops(LatLng position) async {
@@ -293,6 +309,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 _nearbyRadiusKm)
             .take(8)
             .toList());
+        _applyInitialFocus();
       }
     } finally {
       _loadingArrivals = false;
@@ -324,10 +341,17 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     const distance = Distance();
     final shownBusArrivals = _busArrivals
         .where((arrival) =>
-            _userLocation == null ||
-            distance.as(LengthUnit.Kilometer, _userLocation!,
-                    arrival.stop.position) <=
-                _nearbyRadiusKm)
+            (_modeFilter == 'All' || _modeFilter == 'Bus') &&
+            (_query.trim().isEmpty ||
+                _routeSearchKey(arrival.routeLabel)
+                    .contains(_routeSearchKey(_query)) ||
+                arrival.stop.name
+                    .toLowerCase()
+                    .contains(_query.trim().toLowerCase())) &&
+            (_userLocation == null ||
+                distance.as(LengthUnit.Kilometer, _userLocation!,
+                        arrival.stop.position) <=
+                    _nearbyRadiusKm))
         .toList();
     final clusters = _clusterStops(shownStops);
 
@@ -377,6 +401,35 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                     onPressed: _refreshVehicles,
                     icon: const Icon(Icons.refresh_rounded)),
           ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      SizedBox(
+        height: 38,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          scrollDirection: Axis.horizontal,
+          children: [
+            for (final mode in const [
+              'All',
+              'Bus',
+              'LRT',
+              'MRT',
+              'Monorail',
+              'BRT',
+            ]) ...[
+              ChoiceChip(
+                label: Text(mode),
+                selected: _modeFilter == mode,
+                onSelected: (_) => setState(() {
+                  _modeFilter = mode;
+                  _selectedStop = null;
+                  _walkingRoute = null;
+                }),
+              ),
+              const SizedBox(width: 6),
+            ],
+          ],
         ),
       ),
       const SizedBox(height: 8),
@@ -450,14 +503,24 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                               polylineCulling: true,
                               polylines: [
                                 ..._railShapes
-                                    .where((shape) => shape.points.length > 1)
+                                    .where((shape) =>
+                                        shape.points.length > 1 &&
+                                        (_modeFilter == 'All' ||
+                                            _modeForLabel(shape.routeLabel) ==
+                                                _modeFilter))
                                     .map((shape) => Polyline(
                                           points: shape.points,
                                           strokeWidth: 3,
                                           color: shape.color
                                               .withValues(alpha: 0.75),
                                         )),
-                                if (_selectedStop != null &&
+                                if (_walkingRoute != null)
+                                  Polyline(
+                                    points: _walkingRoute!.points,
+                                    strokeWidth: 6,
+                                    color: Colors.blueAccent,
+                                  )
+                                else if (_selectedStop != null &&
                                     _userLocation != null)
                                   Polyline(
                                     points: [
@@ -525,6 +588,11 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                                   onTap: () => launchUrl(Uri.parse(
                                       'https://www.openstreetmap.org/copyright')),
                                 ),
+                                TextSourceAttribution(
+                                  'Routing by OSRM',
+                                  onTap: () => launchUrl(
+                                      Uri.parse('https://project-osrm.org/')),
+                                ),
                               ],
                             ),
                           ],
@@ -566,7 +634,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       if (_selectedStop case final selected?) ...[
         _SelectedStopCard(
           stop: selected,
-          onClose: () => setState(() => _selectedStop = null),
+          walkingRoute: _walkingRoute,
+          loadingRoute: _loadingWalkingRoute,
+          routeMessage: _walkingRouteMessage,
+          onClose: () => setState(() {
+            _selectedStop = null;
+            _walkingRoute = null;
+            _walkingRouteMessage = null;
+          }),
           onDirections:
               _userLocation == null ? null : () => _openDirections(selected),
         ),
@@ -643,7 +718,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               _nearbyRadiusKm;
       final isFresh =
           DateTime.now().difference(vehicle.updatedAt).inMinutes <= 5;
-      return matchesQuery && isNearby && isFresh;
+      final matchesMode = _modeFilter == 'All' || _modeFilter == 'Bus';
+      return matchesQuery && isNearby && isFresh && matchesMode;
     }).toList();
   }
 
@@ -666,7 +742,11 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           final isNearby = _userLocation == null ||
               (stop.distanceMeters ?? double.infinity) <=
                   _nearbyRadiusKm * 1000;
-          return matchesQuery && isNearby;
+          final matchesMode = _modeFilter == 'All' ||
+              stop.transportMode
+                  .toLowerCase()
+                  .contains(_modeFilter.toLowerCase());
+          return matchesQuery && isNearby && matchesMode;
         })
         .take(25)
         .toList();
@@ -674,8 +754,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   }
 
   void _selectStop(Stop stop) {
-    setState(() => _selectedStop = stop);
+    setState(() {
+      _selectedStop = stop;
+      _walkingRoute = null;
+      _walkingRouteMessage = null;
+    });
     final user = _userLocation;
+    if (user != null) _loadWalkingRoute(stop);
     if (!_mapReady) return;
     if (user == null) {
       _mapController.move(stop.position, 16);
@@ -687,6 +772,110 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       maxZoom: 16,
     ));
   }
+
+  Future<void> _loadWalkingRoute(Stop stop) async {
+    final user = _userLocation;
+    if (user == null || _loadingWalkingRoute) return;
+    setState(() {
+      _loadingWalkingRoute = true;
+      _walkingRouteMessage = null;
+    });
+    try {
+      final route = await _walkingRoutes.route(user, stop.position);
+      if (!mounted || _selectedStop != stop) return;
+      setState(() {
+        _walkingRoute = route;
+        _lastRoutedFrom = user;
+        _lastRouteAt = DateTime.now();
+      });
+      if (_mapReady) {
+        _mapController.fitCamera(CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints(route.points),
+          padding: const EdgeInsets.all(42),
+          maxZoom: 17,
+        ));
+      }
+    } catch (_) {
+      if (mounted && _selectedStop == stop) {
+        setState(() => _walkingRouteMessage =
+            'Road guidance is unavailable; showing a direct guide line.');
+      }
+    } finally {
+      if (mounted) setState(() => _loadingWalkingRoute = false);
+    }
+  }
+
+  void _maybeRefreshWalkingRoute(LatLng position) {
+    final selected = _selectedStop;
+    final previous = _lastRoutedFrom;
+    if (selected == null || previous == null || _loadingWalkingRoute) return;
+    const distance = Distance();
+    final moved = distance.as(LengthUnit.Meter, previous, position);
+    final oldEnough = _lastRouteAt == null ||
+        DateTime.now().difference(_lastRouteAt!) > const Duration(seconds: 20);
+    if (moved >= 30 && oldEnough) {
+      _loadWalkingRoute(selected);
+    }
+  }
+
+  void _applyInitialFocus() {
+    if (_initialFocusApplied || widget.initialQuery == null) return;
+    final needle = _routeSearchKey(widget.initialQuery!);
+    final matches = _busArrivals
+        .where((arrival) =>
+            _routeSearchKey(arrival.routeLabel).contains(needle) ||
+            needle.contains(_routeSearchKey(arrival.routeLabel)))
+        .toList();
+    if (matches.isEmpty) {
+      final vehicles = _vehicles
+          .where((vehicle) =>
+              _routeSearchKey(vehicle.routeLabel).contains(needle) ||
+              needle.contains(_routeSearchKey(vehicle.routeLabel)))
+          .toList();
+      if (vehicles.isEmpty || !_mapReady) return;
+      _initialFocusApplied = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _mapController.move(vehicles.first.position, 16);
+      });
+      return;
+    }
+    _initialFocusApplied = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _selectStop(matches.first.stop);
+      }
+    });
+  }
+
+  String _modeForLabel(String value) {
+    final upper = value.toUpperCase();
+    if (upper.contains('MONORAIL') || upper.contains('MRL')) return 'Monorail';
+    if (upper.contains('BRT')) return 'BRT';
+    if (upper.contains('MRT') ||
+        upper.contains('KAJANG') ||
+        upper.contains('PUTRAJAYA') ||
+        upper.contains('KGL') ||
+        upper.contains('PYL')) {
+      return 'MRT';
+    }
+    if (upper.contains('LRT') ||
+        upper.contains('KELANA') ||
+        upper.contains('AMPANG') ||
+        upper.contains('SRI PETALING') ||
+        upper.contains('KJL') ||
+        upper.contains('AGL') ||
+        upper.contains('SPL')) {
+      return 'LRT';
+    }
+    return 'Rail';
+  }
+
+  String _routeSearchKey(String value) => value
+      .toUpperCase()
+      .replaceAll('RAPID KL', '')
+      .split('—')
+      .first
+      .replaceAll(RegExp(r'[^A-Z0-9]'), '');
 
   void _zoomBy(double change) {
     if (!_mapReady) return;
@@ -749,11 +938,17 @@ class _SelectedStopCard extends StatelessWidget {
   final Stop stop;
   final VoidCallback onClose;
   final VoidCallback? onDirections;
+  final WalkingRoute? walkingRoute;
+  final bool loadingRoute;
+  final String? routeMessage;
 
   const _SelectedStopCard({
     required this.stop,
     required this.onClose,
     required this.onDirections,
+    required this.walkingRoute,
+    required this.loadingRoute,
+    required this.routeMessage,
   });
 
   @override
@@ -800,6 +995,29 @@ class _SelectedStopCard extends StatelessWidget {
                       style: const TextStyle(
                           color: AppColors.textSecondary, fontSize: 11),
                     ),
+                  if (loadingRoute)
+                    const Text('Finding a walking route along roads…',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 11)),
+                  if (walkingRoute case final route?) ...[
+                    Text(
+                      '${(route.distanceMeters / 1000).toStringAsFixed(1)} km by road · ${math.max(1, route.duration.inMinutes)} min',
+                      style: const TextStyle(
+                          color: AppColors.textSecondary, fontSize: 11),
+                    ),
+                    if (route.instructions.isNotEmpty)
+                      Text(
+                        'Next: ${route.instructions.first}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 11),
+                      ),
+                  ],
+                  if (routeMessage != null)
+                    Text(routeMessage!,
+                        style: const TextStyle(
+                            color: AppColors.warning, fontSize: 11)),
                 ],
               ),
             ),

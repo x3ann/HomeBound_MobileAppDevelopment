@@ -19,6 +19,7 @@ void main() {
     mode: 'Rapid Rail',
     etaSummary: 'Arrives 8:20 PM',
     status: ServiceUrgency.onTime,
+    totalMinutes: 20,
   );
 
   test('delay estimate is deterministic for the same official inputs', () {
@@ -43,6 +44,8 @@ void main() {
     expect(second.riskScore, first.riskScore);
     expect(second.expectedDelayMinutes, first.expectedDelayMinutes);
     expect(first.confidence, 'Medium');
+    expect(first.riskScore, isNot(8));
+    expect(first.totalEstimatedMinutes, 20);
   });
 
   test('heavy rain increases risk and estimated delay', () {

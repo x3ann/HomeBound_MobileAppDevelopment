@@ -17,10 +17,20 @@ class DashboardShell extends StatefulWidget {
 
 class _DashboardShellState extends State<DashboardShell> {
   int _index = 0;
+  String? _mapQuery;
+  int _mapRequest = 0;
 
   void _goToTab(int i) {
     setState(() {
       _index = i;
+    });
+  }
+
+  void _openBusRoute(String route) {
+    setState(() {
+      _mapQuery = route;
+      _mapRequest++;
+      _index = 1;
     });
   }
 
@@ -32,8 +42,12 @@ class _DashboardShellState extends State<DashboardShell> {
     final screens = [
       LastServiceTrackerScreen(
         onOpenLiveMap: () => _goToTab(1),
+        onOpenBusRoute: _openBusRoute,
       ),
-      const LiveMapScreen(),
+      LiveMapScreen(
+        key: ValueKey(_mapRequest),
+        initialQuery: _mapQuery,
+      ),
       const RoutePlannerScreen(),
       const AiDelayPredictionScreen(),
       const SosPanicScreen(),
@@ -54,12 +68,12 @@ class _DashboardShellState extends State<DashboardShell> {
     return Scaffold(
       body: isLandscape
           ? Row(
-        children: [
-          navigation,
-          const VerticalDivider(width: 1),
-          Expanded(child: content),
-        ],
-      )
+              children: [
+                navigation,
+                const VerticalDivider(width: 1),
+                Expanded(child: content),
+              ],
+            )
           : content,
       bottomNavigationBar: isLandscape ? null : navigation,
     );
