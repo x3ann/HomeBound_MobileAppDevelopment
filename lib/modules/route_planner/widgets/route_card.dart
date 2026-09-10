@@ -27,7 +27,9 @@ class RouteCard extends StatelessWidget {
     };
     final label = switch (optionIndex) {
       0 => 'FASTEST',
-      1 => route.transferCount == 0 ? 'DIRECT' : 'NEXT BEST',
+      1 => route.mode.toLowerCase().contains('bus')
+          ? 'BEST BUS OPTION'
+          : 'BEST RAIL OPTION',
       _ => 'ALTERNATIVE',
     };
     return Padding(
@@ -262,9 +264,11 @@ class _RouteDetailsSheetState extends State<RouteDetailsSheet> {
                               : _StepState.upcoming,
                     ),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Times use the official published timetable. Follow station signs and operator announcements during disruptions.',
-                    style: TextStyle(
+                  Text(
+                    widget.route.mode.toLowerCase().contains('bus')
+                        ? 'Bus times use the official published schedule. Live traffic may change the actual arrival; follow operator updates.'
+                        : 'Rail times use the official published timetable. Follow station signs and operator announcements during disruptions.',
+                    style: const TextStyle(
                         fontSize: 11,
                         height: 1.4,
                         color: AppColors.textSecondary),

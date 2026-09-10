@@ -36,23 +36,30 @@ class CountdownCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('NEAREST STOP',
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textSecondary,
-                          letterSpacing: 1)),
-                  const SizedBox(height: 2),
-                  Text(stop.name,
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w700)),
-                  Text(stop.platform,
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary)),
-                ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('NEAREST STOP',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary,
+                            letterSpacing: 1)),
+                    const SizedBox(height: 2),
+                    Text(stop.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w700)),
+                    Text(stop.platform,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary)),
+                  ],
+                ),
               ),
+              const SizedBox(width: 10),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -62,6 +69,8 @@ class CountdownCard extends StatelessWidget {
                 ),
                 child: Text(
                   stop.serviceStatusLabel,
+                  maxLines: 2,
+                  textAlign: TextAlign.center,
                   style: TextStyle(
                     color: urgency.color,
                     fontSize: 10,

@@ -7,6 +7,12 @@ import '../modules/live_map/live_map_screen.dart';
 import '../modules/route_planner/route_planner_screen.dart';
 import '../modules/ai_delay_prediction/ai_delay_prediction_screen.dart';
 import '../modules/sos_panic/sos_panic_screen.dart';
+import '../shared/models/stop.dart';
+
+enum DashboardPage { liveMap, routePlanner }
+
+Key dashboardPageKey(DashboardPage page, int request) =>
+    ValueKey('${page.name}-$request');
 
 class DashboardShell extends StatefulWidget {
   const DashboardShell({super.key});
@@ -19,6 +25,9 @@ class _DashboardShellState extends State<DashboardShell> {
   int _index = 0;
   String? _mapQuery;
   int _mapRequest = 0;
+  int _plannerRequest = 0;
+  Stop? _plannerOrigin;
+  Stop? _plannerDestination;
 
   void _goToTab(int i) {
     setState(() {
@@ -34,6 +43,15 @@ class _DashboardShellState extends State<DashboardShell> {
     });
   }
 
+  void _openPlannedJourney(Stop origin, Stop destination) {
+    setState(() {
+      _plannerOrigin = origin;
+      _plannerDestination = destination;
+      _plannerRequest++;
+      _index = 2;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final isLandscape =
@@ -45,11 +63,18 @@ class _DashboardShellState extends State<DashboardShell> {
         onOpenBusRoute: _openBusRoute,
       ),
       LiveMapScreen(
-        key: ValueKey(_mapRequest),
+        // Map and planner are siblings in the IndexedStack. Their request
+        // counters can have the same value, so namespace the keys to keep
+        // Flutter from reusing the wrong element during a tab hand-off.
+        key: dashboardPageKey(DashboardPage.liveMap, _mapRequest),
         initialQuery: _mapQuery,
       ),
-      const RoutePlannerScreen(),
-      const AiDelayPredictionScreen(),
+      RoutePlannerScreen(
+        key: dashboardPageKey(DashboardPage.routePlanner, _plannerRequest),
+        initialOrigin: _plannerOrigin,
+        initialDestination: _plannerDestination,
+      ),
+      AiDelayPredictionScreen(onGoNow: _openPlannedJourney),
       const SosPanicScreen(),
     ];
 
