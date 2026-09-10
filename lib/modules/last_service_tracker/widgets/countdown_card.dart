@@ -126,9 +126,9 @@ class CountdownCard extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             stop.transportMode == 'Bus'
-                ? (stop.hasDepartureData
+                ? (stop.isLiveEstimate
                     ? 'Estimated from the latest live bus position'
-                    : 'Official bus stop · live ETA unavailable')
+                    : 'Official scheduled departure · live bus unavailable')
                 : (stop.liveRailEstimate == null
                     ? 'Live rail estimate unavailable · showing official schedule'
                     : 'Experimental live estimate: ${stop.liveRailEstimate}'),

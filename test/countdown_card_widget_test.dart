@@ -44,4 +44,37 @@ void main() {
         findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('bus card distinguishes scheduled and live estimates',
+      (tester) async {
+    const scheduled = Stop(
+      name: 'Test stop',
+      platform: 'Bus stop · T250',
+      position: LatLng(3.1494, 101.6167),
+      timeToDeparture: Duration(minutes: 12),
+      urgency: ServiceUrgency.closingSoon,
+      transportMode: 'Bus',
+      routeLabel: 'T250',
+    );
+
+    Widget card(Stop stop) => MaterialApp(
+          theme: AppTheme.dark,
+          home: Scaffold(
+            body: CountdownCard(
+              stop: stop,
+              remaining: stop.timeToDeparture,
+              urgency: stop.urgency,
+            ),
+          ),
+        );
+
+    await tester.pumpWidget(card(scheduled));
+    expect(find.text('Official scheduled departure · live bus unavailable'),
+        findsOneWidget);
+
+    await tester.pumpWidget(card(scheduled.copyWith(isLiveEstimate: true)));
+    expect(find.text('Estimated from the latest live bus position'),
+        findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

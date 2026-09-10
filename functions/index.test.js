@@ -4,9 +4,17 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   haversineKm,
+  isFreshVehicle,
   trainLinearModel,
   transitionSamples,
 } = require("./index")._test;
+
+test("rejects stale and future vehicle timestamps", () => {
+  const vehicle = {timestampSeconds: 1000};
+  assert.equal(isFreshVehicle(vehicle, 1100), true);
+  assert.equal(isFreshVehicle(vehicle, 1300), false);
+  assert.equal(isFreshVehicle({timestampSeconds: 5000}, 1100), false);
+});
 
 test("creates a real segment observation when a vehicle advances", () => {
   const previous = [{

@@ -8,11 +8,13 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/location_service.dart';
 import '../../services/bus_arrival_service.dart';
+import '../../services/gtfs_service.dart';
 import '../../services/realtime_transit_service.dart';
 import '../../services/transit_repository.dart';
 import '../../services/walking_route_service.dart';
 import '../../shared/models/stop.dart';
 import '../../shared/models/bus_arrival_estimate.dart';
+import '../../shared/models/planned_journey.dart';
 import '../../shared/models/transit_shape.dart';
 import '../../shared/models/transit_vehicle.dart';
 import '../../shared/models/walking_route.dart';
@@ -27,8 +29,13 @@ import 'widgets/stop_pin.dart';
 /// are distance-sorted from the first frame.
 class LiveMapScreen extends StatefulWidget {
   final String? initialQuery;
+  final PlannedJourney? initialJourney;
 
-  const LiveMapScreen({super.key, this.initialQuery});
+  const LiveMapScreen({
+    super.key,
+    this.initialQuery,
+    this.initialJourney,
+  });
 
   @override
   State<LiveMapScreen> createState() => _LiveMapScreenState();
@@ -57,6 +64,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   LatLng? _lastBusStopCenter;
   DateTime? _lastBusStopAttempt;
   Stop? _selectedStop;
+  bool _selectedStopExpanded = false;
   String _query = '';
   String? _liveMessage;
   String? _locationMessage;
@@ -76,11 +84,15 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   bool _scheduleRefreshPending = false;
   DateTime _lastClockReading = DateTime.now();
   final _walkingRoutes = WalkingRouteService();
+  PlannedJourney? _journey;
+  bool _followJourneyLocation = false;
+  double? _journeyLocationProgress;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _journey = widget.initialJourney;
     _query = widget.initialQuery ?? '';
     _searchController.text = _query;
     if (_query.isNotEmpty) _modeFilter = 'Bus';
@@ -166,6 +178,34 @@ class _LiveMapScreenState extends State<LiveMapScreen>
       _railShapes = shapes;
       _loading = false;
     });
+    if (_journey != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _focusJourney());
+    }
+    if (_journey?.route.mode.toLowerCase().contains('bus') == true) {
+      unawaited(_loadJourneyBusShapes());
+    }
+  }
+
+  Future<void> _loadJourneyBusShapes() async {
+    final busShapeGroups = await Future.wait([
+      'rapid-bus-kl',
+      'rapid-bus-mrtfeeder',
+    ].map((category) async {
+      try {
+        return await TransitRepository.instance
+            .getTransitShapes(category: category);
+      } catch (_) {
+        return const <TransitShape>[];
+      }
+    }));
+    if (!mounted || _journey == null) return;
+    setState(() {
+      _railShapes = [
+        ..._railShapes,
+        ...busShapeGroups.expand((group) => group)
+      ];
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focusJourney());
   }
 
   Future<void> _recalculateSchedule() async {
@@ -238,9 +278,20 @@ class _LiveMapScreenState extends State<LiveMapScreen>
       _stops = TransitRepository.instance.sortByDistance(_stops, position);
       _busStops =
           TransitRepository.instance.sortByDistance(_busStops, position);
+      final locationProgress = _journey?.progressForPosition(position);
+      if (locationProgress != null) {
+        _journeyLocationProgress = math.max(
+          _journeyLocationProgress ?? 0,
+          locationProgress,
+        );
+      }
     });
     if (_mapReady) {
-      if (_selectedStop == null) _mapController.move(position, 14.5);
+      if (_journey != null && _followJourneyLocation) {
+        _mapController.move(position, 16.5);
+      } else if (_selectedStop == null && _journey == null) {
+        _mapController.move(position, 14.5);
+      }
     }
     _refreshBusArrivals();
     _refreshNearbyBusStops(position);
@@ -437,6 +488,10 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                     _nearbyRadiusKm))
         .toList();
     final clusters = _clusterStops(shownStops);
+    final journey = _journey;
+    final journeyShapes = journey == null
+        ? const <TransitShape>[]
+        : _railShapes.where(_shapeMatchesJourney).toList();
 
     return Column(children: [
       Padding(
@@ -466,120 +521,131 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                     : 'Retry')),
           ]),
         ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: TextField(
-          controller: _searchController,
-          decoration: InputDecoration(
-            hintText: 'Search a station, bus route, or vehicle',
-            prefixIcon: const Icon(Icons.search_rounded),
-            suffixIcon: _loadingVehicles
-                ? const Padding(
-                    padding: EdgeInsets.all(12),
-                    child: SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2)))
-                : IconButton(
-                    onPressed: _refreshVehicles,
-                    icon: const Icon(Icons.refresh_rounded)),
+      if (journey != null)
+        _JourneyOverviewCard(
+          journey: journey,
+          serviceSeconds: GtfsService.secondsIntoServiceDay(DateTime.now()),
+          locationProgress: _journeyLocationProgress,
+          onFocus: _focusJourney,
+          onExit: _exitJourney,
+        ),
+      if (journey == null) ...[
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search a station, bus route, or vehicle',
+              prefixIcon: const Icon(Icons.search_rounded),
+              suffixIcon: _loadingVehicles
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2)))
+                  : IconButton(
+                      onPressed: _refreshVehicles,
+                      icon: const Icon(Icons.refresh_rounded)),
+            ),
           ),
         ),
-      ),
-      const SizedBox(height: 8),
-      SizedBox(
-        height: 38,
-        child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          scrollDirection: Axis.horizontal,
-          children: [
-            for (final mode in const [
-              'All',
-              'Bus',
-              'LRT',
-              'MRT',
-              'Monorail',
-              'BRT',
-            ]) ...[
-              ChoiceChip(
-                label: Text(mode),
-                selected: _modeFilter == mode,
-                onSelected: (_) => setState(() {
-                  _modeFilter = mode;
-                  _lineFilter = 'All';
-                  _selectedStop = null;
-                  _walkingRoute = null;
-                }),
-              ),
-              const SizedBox(width: 6),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 38,
+          child: ListView(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            scrollDirection: Axis.horizontal,
+            children: [
+              for (final mode in const [
+                'All',
+                'Bus',
+                'LRT',
+                'MRT',
+                'Monorail',
+                'BRT',
+              ]) ...[
+                ChoiceChip(
+                  label: Text(mode),
+                  selected: _modeFilter == mode,
+                  onSelected: (_) => setState(() {
+                    _modeFilter = mode;
+                    _lineFilter = 'All';
+                    _selectedStop = null;
+                    _walkingRoute = null;
+                  }),
+                ),
+                const SizedBox(width: 6),
+              ],
             ],
-          ],
+          ),
         ),
-      ),
-      ...[
+        ...[
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: DropdownButtonFormField<String>(
+              initialValue: _lineFilter,
+              isExpanded: true,
+              decoration: InputDecoration(
+                labelText: _modeFilter == 'Bus'
+                    ? 'Bus route shown on map'
+                    : 'Line shown on map',
+                prefixIcon: const Icon(Icons.route_rounded),
+              ),
+              items: _availableLines
+                  .map((line) => DropdownMenuItem(
+                        value: line,
+                        child: Text(
+                          line,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ))
+                  .toList(),
+              onChanged: (line) => setState(() {
+                _lineFilter = line ?? 'All';
+                _selectedStop = null;
+                _walkingRoute = null;
+              }),
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: DropdownButtonFormField<String>(
-            initialValue: _lineFilter,
-            isExpanded: true,
-            decoration: InputDecoration(
-              labelText: _modeFilter == 'Bus'
-                  ? 'Bus route shown on map'
-                  : 'Line shown on map',
-              prefixIcon: const Icon(Icons.route_rounded),
-            ),
-            items: _availableLines
-                .map((line) => DropdownMenuItem(
-                      value: line,
-                      child: Text(
-                        line,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ))
-                .toList(),
-            onChanged: (line) => setState(() {
-              _lineFilter = line ?? 'All';
-              _selectedStop = null;
-              _walkingRoute = null;
-            }),
+          child: Row(
+            children: [
+              const Text('Nearby radius',
+                  style:
+                      TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+              const SizedBox(width: 10),
+              for (final radius in const [1.0, 2.0]) ...[
+                ChoiceChip(
+                  label: Text('${radius.toInt()} km'),
+                  selected: _nearbyRadiusKm == radius,
+                  onSelected: (_) => setState(() {
+                    _nearbyRadiusKm = radius;
+                    if (_selectedStop != null &&
+                        (_selectedStop!.distanceMeters ?? double.infinity) >
+                            radius * 1000) {
+                      _selectedStop = null;
+                    }
+                  }),
+                ),
+                const SizedBox(width: 6),
+              ],
+              const Spacer(),
+              Text('${shownStops.length} stops',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11)),
+            ],
           ),
         ),
+        const SizedBox(height: 8),
       ],
-      const SizedBox(height: 8),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Row(
-          children: [
-            const Text('Nearby radius',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-            const SizedBox(width: 10),
-            for (final radius in const [1.0, 2.0]) ...[
-              ChoiceChip(
-                label: Text('${radius.toInt()} km'),
-                selected: _nearbyRadiusKm == radius,
-                onSelected: (_) => setState(() {
-                  _nearbyRadiusKm = radius;
-                  if (_selectedStop != null &&
-                      (_selectedStop!.distanceMeters ?? double.infinity) >
-                          radius * 1000) {
-                    _selectedStop = null;
-                  }
-                }),
-              ),
-              const SizedBox(width: 6),
-            ],
-            const Spacer(),
-            Text('${shownStops.length} stops',
-                style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 11)),
-          ],
-        ),
-      ),
-      const SizedBox(height: 8),
       Expanded(
-        flex: _selectedStop == null ? 4 : 2,
+        flex: journey != null ? 6 : 4,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: ClipRRect(
@@ -603,8 +669,9 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                             },
                             onMapReady: () {
                               _mapReady = true;
-                              final location = _userLocation;
-                              if (location != null) {
+                              if (_journey != null) {
+                                _focusJourney();
+                              } else if (_userLocation case final location?) {
                                 _mapController.move(location, 14.5);
                               }
                             },
@@ -617,20 +684,34 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                             PolylineLayer(
                               polylineCulling: true,
                               polylines: [
-                                ..._railShapes
-                                    .where((shape) =>
-                                        shape.points.length > 1 &&
-                                        (_modeFilter == 'All' ||
-                                            shape.transportMode ==
-                                                _modeFilter) &&
-                                        (_lineFilter == 'All' ||
-                                            shape.routeLabel == _lineFilter))
+                                ...(journey == null
+                                        ? _railShapes.where((shape) =>
+                                            shape.points.length > 1 &&
+                                            (_modeFilter == 'All' ||
+                                                shape.transportMode ==
+                                                    _modeFilter) &&
+                                            (_lineFilter == 'All' ||
+                                                shape.routeLabel ==
+                                                    _lineFilter))
+                                        : journeyShapes)
                                     .map((shape) => Polyline(
                                           points: shape.points,
-                                          strokeWidth: 3,
-                                          color: shape.color
-                                              .withValues(alpha: 0.75),
+                                          strokeWidth: journey == null ? 3 : 7,
+                                          color: shape.color.withValues(
+                                              alpha: journey == null
+                                                  ? 0.75
+                                                  : 0.95),
                                         )),
+                                if (journey != null)
+                                  Polyline(
+                                    points: [
+                                      journey.origin.position,
+                                      journey.destination.position,
+                                    ],
+                                    strokeWidth: 4,
+                                    color: AppColors.gold,
+                                    isDotted: true,
+                                  ),
                                 if (_walkingRoute != null)
                                   Polyline(
                                     points: _walkingRoute!.points,
@@ -691,6 +772,38 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                                     width: 42,
                                     height: 42,
                                     child: const _UserLocationPin()),
+                              if (journey != null) ...[
+                                ...journey.route.checkpoints
+                                    .asMap()
+                                    .entries
+                                    .map((entry) => Marker(
+                                          point: entry.value.position,
+                                          width: 40,
+                                          height: 40,
+                                          child: _JourneyCheckpointPin(
+                                            number: entry.key + 1,
+                                            label: entry.value.name,
+                                          ),
+                                        )),
+                                Marker(
+                                  point: journey.origin.position,
+                                  width: 46,
+                                  height: 46,
+                                  child: const _JourneyEndpointPin(
+                                    label: 'A',
+                                    color: AppColors.success,
+                                  ),
+                                ),
+                                Marker(
+                                  point: journey.destination.position,
+                                  width: 46,
+                                  height: 46,
+                                  child: const _JourneyEndpointPin(
+                                    label: 'B',
+                                    color: AppColors.critical,
+                                  ),
+                                ),
+                              ],
                               ...shownVehicles.map((vehicle) => Marker(
                                   point: vehicle.position,
                                   width: 42,
@@ -734,9 +847,14 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                         if (_userLocation != null)
                           _MapButton(
                               icon: Icons.my_location_rounded,
-                              tooltip: 'Refresh my location',
+                              tooltip: journey == null
+                                  ? 'Refresh my location'
+                                  : 'Follow my live location',
                               onPressed: () {
                                 setState(() => _selectedStop = null);
+                                if (journey != null) {
+                                  _followJourneyLocation = true;
+                                }
                                 _refreshLocation();
                               }),
                       ],
@@ -748,79 +866,132 @@ class _LiveMapScreenState extends State<LiveMapScreen>
         ),
       ),
       const SizedBox(height: 12),
-      if (_selectedStop case final selected?) ...[
-        _SelectedStopCard(
-          stop: selected,
-          walkingRoute: _walkingRoute,
-          loadingRoute: _loadingWalkingRoute,
-          routeMessage: _walkingRouteMessage,
-          onClose: () => setState(() {
-            _selectedStop = null;
-            _walkingRoute = null;
-            _walkingRouteMessage = null;
-          }),
-          onDirections:
-              _userLocation == null ? null : () => _openDirections(selected),
-        ),
-        const SizedBox(height: 10),
-      ],
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Row(children: [
-          const Expanded(
-              child: Text('Nearby stops',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700))),
-          Text(
-              '${shownStops.length} stops · ${shownVehicles.length} vehicles${_lastVehicleUpdate == null ? '' : ' · ${_timeLabel(_lastVehicleUpdate!)}'}',
-              style: const TextStyle(
-                  fontSize: 11, color: AppColors.textSecondary)),
-        ]),
-      ),
-      const SizedBox(height: 8),
-      if (shownBusArrivals.isNotEmpty)
-        SizedBox(
-          height: 88,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20),
-                child: Text('Estimated bus arrivals from live positions',
-                    style: TextStyle(
-                        fontSize: 11, color: AppColors.textSecondary)),
-              ),
-              Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: shownBusArrivals.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (_, index) {
-                    final arrival = shownBusArrivals[index];
-                    return ActionChip(
-                      avatar:
-                          const Icon(Icons.directions_bus_rounded, size: 17),
-                      label: Text(
-                          '${arrival.routeLabel} · ${arrival.stop.name} · ${arrival.etaLabel}'),
-                      onPressed: () => _selectStop(arrival.stop),
-                    );
-                  },
-                ),
-              ),
-            ],
+      if (journey == null) ...[
+        if (_selectedStop case final selected?) ...[
+          _SelectedStopCard(
+            stop: selected,
+            expanded: _selectedStopExpanded,
+            walkingRoute: _walkingRoute,
+            loadingRoute: _loadingWalkingRoute,
+            routeMessage: _walkingRouteMessage,
+            onClose: () => setState(() {
+              _selectedStop = null;
+              _selectedStopExpanded = false;
+              _walkingRoute = null;
+              _walkingRouteMessage = null;
+            }),
+            onToggleExpanded: () => setState(
+              () => _selectedStopExpanded = !_selectedStopExpanded,
+            ),
+            onDirections:
+                _userLocation == null ? null : () => _openDirections(selected),
           ),
+          const SizedBox(height: 10),
+        ],
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(children: [
+            const Expanded(
+                child: Text('Nearby stops',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.w700))),
+            Text(
+                '${shownStops.length} stops · ${shownVehicles.length} vehicles${_lastVehicleUpdate == null ? '' : ' · ${_timeLabel(_lastVehicleUpdate!)}'}',
+                style: const TextStyle(
+                    fontSize: 11, color: AppColors.textSecondary)),
+          ]),
         ),
-      Expanded(
-          flex: 3,
-          child: ListView(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-              children: shownStops
-                  .map((stop) => StopListTile(
-                        stop: stop,
-                        onTap: () => _selectStop(stop),
-                      ))
-                  .toList())),
+        const SizedBox(height: 8),
+        if (shownBusArrivals.isNotEmpty)
+          SizedBox(
+            height: 88,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20),
+                  child: Text('Estimated bus arrivals from live positions',
+                      style: TextStyle(
+                          fontSize: 11, color: AppColors.textSecondary)),
+                ),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    scrollDirection: Axis.horizontal,
+                    itemCount: shownBusArrivals.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, index) {
+                      final arrival = shownBusArrivals[index];
+                      return ActionChip(
+                        avatar:
+                            const Icon(Icons.directions_bus_rounded, size: 17),
+                        label: Text(
+                            '${arrival.routeLabel} · ${arrival.stop.name} · ${arrival.etaLabel}'),
+                        onPressed: () => _selectStop(arrival.stop),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+            flex: 3,
+            child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                children: shownStops
+                    .map((stop) => StopListTile(
+                          stop: stop,
+                          onTap: () => _selectStop(stop),
+                        ))
+                    .toList())),
+      ],
     ]);
+  }
+
+  bool _shapeMatchesJourney(TransitShape shape) {
+    final journey = _journey;
+    if (journey == null || shape.points.length < 2) return false;
+    final routeText = '${journey.route.mode} ${journey.route.steps.join(' ')}'
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ');
+    final label = shape.routeLabel
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .trim();
+    if (label.isEmpty) return false;
+    if (routeText.contains(label)) return true;
+    final coreLabel = label.replaceAll(RegExp(r'\bline\b'), '').trim();
+    return coreLabel.length >= 5 && routeText.contains(coreLabel);
+  }
+
+  void _focusJourney() {
+    final journey = _journey;
+    if (!_mapReady || journey == null) return;
+    _followJourneyLocation = false;
+    _mapController.fitCamera(CameraFit.bounds(
+      bounds: LatLngBounds.fromPoints([
+        journey.origin.position,
+        ...journey.route.checkpoints.map((checkpoint) => checkpoint.position),
+        journey.destination.position,
+      ]),
+      padding: const EdgeInsets.fromLTRB(46, 70, 46, 70),
+      maxZoom: 16,
+    ));
+  }
+
+  void _exitJourney() {
+    setState(() {
+      _journey = null;
+      _followJourneyLocation = false;
+      _journeyLocationProgress = null;
+    });
+    final location = _userLocation;
+    if (_mapReady && location != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _mapController.move(location, 14.5);
+      });
+    }
   }
 
   List<TransitVehicle> _matchingVehicles() {
@@ -875,6 +1046,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   void _selectStop(Stop stop) {
     setState(() {
       _selectedStop = stop;
+      _selectedStopExpanded = false;
       _walkingRoute = null;
       _walkingRouteMessage = null;
     });
@@ -1050,9 +1222,240 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   }
 }
 
+class _JourneyOverviewCard extends StatelessWidget {
+  final PlannedJourney journey;
+  final int serviceSeconds;
+  final double? locationProgress;
+  final VoidCallback onFocus;
+  final VoidCallback onExit;
+
+  const _JourneyOverviewCard({
+    required this.journey,
+    required this.serviceSeconds,
+    required this.locationProgress,
+    required this.onFocus,
+    required this.onExit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = locationProgress ?? journey.progressAt(serviceSeconds);
+    if (locationProgress != null && progress >= .995) {
+      return _JourneyArrivalCard(
+        journey: journey,
+        onEndJourney: onExit,
+      );
+    }
+    final steps = journey.route.steps;
+    final activeIndex = locationProgress == null
+        ? journey.activeStepAt(serviceSeconds)
+        : journey.activeStepAtProgress(progress);
+    final checkpoints = journey.route.checkpoints;
+    final checkpointIndex = locationProgress == null
+        ? journey.activeCheckpointAt(serviceSeconds)
+        : journey.activeCheckpointAtProgress(progress);
+    final instruction = steps.isEmpty
+        ? 'Follow the selected ${journey.route.mode} journey.'
+        : steps[activeIndex];
+    final status = locationProgress != null
+        ? progress >= .995
+            ? 'Destination reached'
+            : 'Live location progress · step ${activeIndex + 1} of ${steps.length}'
+        : progress <= 0
+            ? 'Upcoming · departs ${journey.route.departureTime}'
+            : progress >= 1
+                ? 'Scheduled journey complete'
+                : 'Scheduled progress · step ${activeIndex + 1} of ${steps.length}';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.gold.withValues(alpha: .55)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.navigation_rounded,
+                    color: AppColors.gold, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${journey.origin.name} → ${journey.destination.name}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Focus whole journey',
+                  onPressed: onFocus,
+                  icon: const Icon(Icons.center_focus_strong_rounded,
+                      color: AppColors.gold),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Exit journey view',
+                  onPressed: onExit,
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+            Text(
+              '${journey.route.mode} · ${journey.route.durationLabel} · '
+              '${journey.route.arrivalTime}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 10),
+            LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              borderRadius: BorderRadius.circular(8),
+              backgroundColor: AppColors.surfaceAlt,
+              color: AppColors.gold,
+            ),
+            const SizedBox(height: 7),
+            Text(status,
+                style: const TextStyle(
+                    fontSize: 11, color: AppColors.textSecondary)),
+            const SizedBox(height: 5),
+            Text(instruction,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+            if (checkpoints.isNotEmpty) ...[
+              const SizedBox(height: 7),
+              Text(
+                'Checkpoint ${checkpointIndex + 1}/${checkpoints.length}: '
+                '${checkpoints[checkpointIndex].name} · '
+                '${checkpoints[checkpointIndex].instruction}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 11, color: AppColors.textSecondary),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _JourneyArrivalCard extends StatelessWidget {
+  final PlannedJourney journey;
+  final VoidCallback onEndJourney;
+
+  const _JourneyArrivalCard({
+    required this.journey,
+    required this.onEndJourney,
+  });
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        liveRegion: true,
+        label: 'Destination reached. Arrived at ${journey.destination.name}.',
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: AppColors.success.withValues(alpha: .75),
+                width: 1.5,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: AppColors.success.withValues(alpha: .16),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.check_rounded,
+                        color: AppColors.success,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'YOU HAVE ARRIVED',
+                            style: TextStyle(
+                              color: AppColors.success,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: .8,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            journey.destination.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Journey complete · ${journey.route.durationLabel} planned · '
+                  '${journey.route.mode}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: onEndJourney,
+                    icon: const Icon(Icons.done_all_rounded),
+                    label: const Text('End journey'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
 class _SelectedStopCard extends StatelessWidget {
   final Stop stop;
+  final bool expanded;
   final VoidCallback onClose;
+  final VoidCallback onToggleExpanded;
   final VoidCallback? onDirections;
   final WalkingRoute? walkingRoute;
   final bool loadingRoute;
@@ -1060,7 +1463,9 @@ class _SelectedStopCard extends StatelessWidget {
 
   const _SelectedStopCard({
     required this.stop,
+    required this.expanded,
     required this.onClose,
+    required this.onToggleExpanded,
     required this.onDirections,
     required this.walkingRoute,
     required this.loadingRoute,
@@ -1108,85 +1513,105 @@ class _SelectedStopCard extends StatelessWidget {
                         color: AppColors.gold),
                   ),
                 IconButton(
+                  onPressed: onToggleExpanded,
+                  tooltip: expanded ? 'Show fewer details' : 'Show all details',
+                  icon: Icon(expanded
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded),
+                ),
+                IconButton(
                   onPressed: onClose,
                   tooltip: 'Close station details',
                   icon: const Icon(Icons.close_rounded),
                 ),
               ],
             ),
-            Wrap(
-              spacing: 7,
-              runSpacing: 7,
-              children: [
-                _StopDetailPill(
-                    icon: Icons.category_outlined, label: stop.transportMode),
-                _StopDetailPill(
-                  icon: stop.isOperating
-                      ? Icons.check_circle_outline_rounded
-                      : Icons.nightlight_outlined,
-                  label: stop.serviceStatusLabel,
-                  color:
-                      stop.isOperating ? AppColors.success : AppColors.critical,
-                ),
-                _StopDetailPill(
-                  icon: Icons.schedule_rounded,
-                  label: stop.isOperating
-                      ? 'Next ${stop.formattedCountdown}'
-                      : 'Currently closed',
-                ),
-                if (stop.lastService != '—')
+            if (!expanded)
+              Text(
+                '${stop.transportMode} · ${stop.serviceStatusLabel} · '
+                '${stop.isOperating ? 'Next ${stop.formattedCountdown}' : 'Currently closed'}'
+                '${meters == null ? '' : ' · ${meters < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} away'}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
+              ),
+            if (expanded) ...[
+              Wrap(
+                spacing: 7,
+                runSpacing: 7,
+                children: [
                   _StopDetailPill(
-                    icon: Icons.last_page_rounded,
-                    label: 'Last ${stop.lastService}',
+                      icon: Icons.category_outlined, label: stop.transportMode),
+                  _StopDetailPill(
+                    icon: stop.isOperating
+                        ? Icons.check_circle_outline_rounded
+                        : Icons.nightlight_outlined,
+                    label: stop.serviceStatusLabel,
+                    color: stop.isOperating
+                        ? AppColors.success
+                        : AppColors.critical,
                   ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              stop.routeLabel.isEmpty
-                  ? stop.platform
-                  : 'Lines/routes: ${stop.routeLabel}',
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  color: AppColors.textSecondary, fontSize: 11, height: 1.3),
-            ),
-            if (walkMinutes != null)
-              Text(
-                'From you: ${meters! < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} · about $walkMinutes min walk',
-                style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 11),
+                  _StopDetailPill(
+                    icon: Icons.schedule_rounded,
+                    label: stop.isOperating
+                        ? 'Next ${stop.formattedCountdown}'
+                        : 'Currently closed',
+                  ),
+                  if (stop.lastService != '—')
+                    _StopDetailPill(
+                      icon: Icons.last_page_rounded,
+                      label: 'Last ${stop.lastService}',
+                    ),
+                ],
               ),
-            if (loadingRoute)
-              const Text('Finding a walking route along roads…',
-                  style:
-                      TextStyle(color: AppColors.textSecondary, fontSize: 11)),
-            if (walkingRoute case final route?) ...[
+              const SizedBox(height: 8),
               Text(
-                'Road route: ${(route.distanceMeters / 1000).toStringAsFixed(1)} km · ${math.max(1, route.duration.inMinutes)} min',
+                stop.routeLabel.isEmpty
+                    ? stop.platform
+                    : 'Lines/routes: ${stop.routeLabel}',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 11),
+                    color: AppColors.textSecondary, fontSize: 11, height: 1.3),
               ),
-              if (route.instructions.isNotEmpty)
+              if (walkMinutes != null)
                 Text(
-                  'Next direction: ${route.instructions.first}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                  'From you: ${meters! < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} · about $walkMinutes min walk',
                   style: const TextStyle(
                       color: AppColors.textSecondary, fontSize: 11),
                 ),
+              if (loadingRoute)
+                const Text('Finding a walking route along roads…',
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11)),
+              if (walkingRoute case final route?) ...[
+                Text(
+                  'Road route: ${(route.distanceMeters / 1000).toStringAsFixed(1)} km · ${math.max(1, route.duration.inMinutes)} min',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11),
+                ),
+                if (route.instructions.isNotEmpty)
+                  Text(
+                    'Next direction: ${route.instructions.first}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11),
+                  ),
+              ],
+              if (routeMessage != null)
+                Text(routeMessage!,
+                    style: const TextStyle(
+                        color: AppColors.warning, fontSize: 11)),
+              const SizedBox(height: 5),
+              Text(
+                'Stop ID: ${stop.gtfsStopId ?? 'Unavailable'} · '
+                '${stop.position.latitude.toStringAsFixed(5)}, ${stop.position.longitude.toStringAsFixed(5)}',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 10),
+              ),
             ],
-            if (routeMessage != null)
-              Text(routeMessage!,
-                  style:
-                      const TextStyle(color: AppColors.warning, fontSize: 11)),
-            const SizedBox(height: 5),
-            Text(
-              'Stop ID: ${stop.gtfsStopId ?? 'Unavailable'} · '
-              '${stop.position.latitude.toStringAsFixed(5)}, ${stop.position.longitude.toStringAsFixed(5)}',
-              style:
-                  const TextStyle(color: AppColors.textSecondary, fontSize: 10),
-            ),
           ],
         ),
       ),
@@ -1294,4 +1719,55 @@ class _VehiclePin extends StatelessWidget {
       message: '${vehicle.routeLabel}\nVehicle ${vehicle.id}',
       child: const Icon(Icons.directions_transit_rounded,
           color: AppColors.gold, size: 32));
+}
+
+class _JourneyEndpointPin extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _JourneyEndpointPin({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: const [
+            BoxShadow(
+                color: Colors.black38, blurRadius: 6, offset: Offset(0, 2)),
+          ],
+        ),
+        child: Text(label,
+            style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.w900)),
+      );
+}
+
+class _JourneyCheckpointPin extends StatelessWidget {
+  final int number;
+  final String label;
+
+  const _JourneyCheckpointPin({required this.number, required this.label});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'Checkpoint $number · $label',
+        child: Container(
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            shape: BoxShape.circle,
+            border: Border.all(color: AppColors.gold, width: 3),
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black38, blurRadius: 5, offset: Offset(0, 2)),
+            ],
+          ),
+          child: Text('$number',
+              style: const TextStyle(
+                  color: AppColors.gold, fontWeight: FontWeight.w900)),
+        ),
+      );
 }

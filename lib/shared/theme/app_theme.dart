@@ -43,7 +43,8 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.surface,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide.none,
@@ -63,7 +64,8 @@ class AppTheme {
           backgroundColor: AppColors.gold,
           foregroundColor: AppColors.navy,
           minimumSize: const Size.fromHeight(52),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
         ),
       ),
@@ -72,7 +74,8 @@ class AppTheme {
           foregroundColor: AppColors.textPrimary,
           minimumSize: const Size.fromHeight(52),
           side: const BorderSide(color: AppColors.divider),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
       cardTheme: CardThemeData(
@@ -85,8 +88,7 @@ class AppTheme {
   }
 }
 
-/// Status colour helper used across Last Service Tracker, Live Map and
-/// Route Planner so "urgency" colour-coding stays consistent everywhere.
+/// Departure proximity helper used across the transit screens.
 enum ServiceUrgency { onTime, closingSoon, critical }
 
 extension ServiceUrgencyColor on ServiceUrgency {
@@ -104,11 +106,11 @@ extension ServiceUrgencyColor on ServiceUrgency {
   String get label {
     switch (this) {
       case ServiceUrgency.onTime:
-        return 'ON TIME';
+        return 'SCHEDULED';
       case ServiceUrgency.closingSoon:
-        return 'CLOSING SOON';
+        return 'ARRIVING SOON';
       case ServiceUrgency.critical:
-        return 'CRITICAL';
+        return 'DUE SOON';
     }
   }
 }

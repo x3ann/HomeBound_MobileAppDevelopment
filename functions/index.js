@@ -69,6 +69,11 @@ function normalizeVehicle(entity, category, fallbackTimestamp) {
   };
 }
 
+function isFreshVehicle(vehicle, referenceTimestamp) {
+  return vehicle.timestampSeconds >= referenceTimestamp - 180 &&
+    vehicle.timestampSeconds <= referenceTimestamp + 60;
+}
+
 async function fetchVehicles(category, timestampSeconds) {
   const url = new URL(
       "https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana",
@@ -80,7 +85,8 @@ async function fetchVehicles(category, timestampSeconds) {
   const feed = gtfsRealtime.FeedMessage.decode(bytes);
   return feed.entity
       .map((entity) => normalizeVehicle(entity, category, timestampSeconds))
-      .filter(Boolean);
+      .filter((vehicle) =>
+        vehicle && isFreshVehicle(vehicle, timestampSeconds));
 }
 
 async function fetchWeather() {
@@ -397,6 +403,7 @@ exports._test = {
   featureVector,
   fetchVehicles,
   haversineKm,
+  isFreshVehicle,
   prepareRows,
   timeFeatures,
   trainLinearModel,
