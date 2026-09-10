@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homebound/services/delay_prediction_service.dart';
+import 'package:homebound/services/firebase_delay_model_service.dart';
 import 'package:homebound/shared/models/delay_prediction.dart';
 import 'package:homebound/shared/models/route_model.dart';
 import 'package:homebound/shared/models/stop.dart';
@@ -108,5 +109,28 @@ void main() {
     expect(transfer.expectedDelayMinutes,
         greaterThan(direct.expectedDelayMinutes));
     expect(transfer.factors, contains(contains('switches from MRT to LRT')));
+  });
+
+  test('validated model output replaces fixed weather weighting', () {
+    final prediction = DelayPredictionService.calculate(
+      origin: origin.copyWith(transportMode: 'Bus'),
+      destination: origin.copyWith(transportMode: 'Bus'),
+      routes: const [route],
+      weather: const CurrentWeather(
+          precipitationMm: 9, weatherCode: 65, isLive: true),
+      scheduleAvailable: true,
+      calculatedAt: DateTime(2026, 9, 10),
+      modelEstimate: const DelayModelEstimate(
+        expectedDelayMinutes: 3.2,
+        version: 'bus-delay-test',
+        sampleCount: 1500,
+        validationMae: 1.1,
+      ),
+    );
+
+    expect(prediction.usedTrainedModel, isTrue);
+    expect(prediction.expectedDelayMinutes, 4);
+    expect(prediction.sourceSummary, contains('bus-delay-test'));
+    expect(prediction.factors, contains(contains('validated bus model')));
   });
 }

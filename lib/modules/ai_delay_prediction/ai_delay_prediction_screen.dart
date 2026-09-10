@@ -158,7 +158,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        'Uses official schedules and current weather. Results are estimates, not guaranteed arrival times.',
+                        'Uses a validated bus model when available, with official schedules and current weather as the fallback. Rail results remain schedule-based until stable realtime rail data is published.',
                         style: TextStyle(
                             color: AppColors.textSecondary,
                             fontSize: 13,
