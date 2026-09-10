@@ -1,6 +1,7 @@
 import '../shared/models/delay_prediction.dart';
 import '../shared/models/route_model.dart';
 import '../shared/models/stop.dart';
+import 'firebase_delay_model_service.dart';
 import 'transit_repository.dart';
 import 'weather_service.dart';
 
@@ -8,11 +9,14 @@ class DelayPredictionService {
   DelayPredictionService({
     TransitRepository? repository,
     WeatherService? weatherService,
+    FirebaseDelayModelService? modelService,
   })  : _repository = repository ?? TransitRepository.instance,
-        _weatherService = weatherService ?? WeatherService();
+        _weatherService = weatherService ?? WeatherService(),
+        _modelService = modelService ?? FirebaseDelayModelService();
 
   final TransitRepository _repository;
   final WeatherService _weatherService;
+  final FirebaseDelayModelService _modelService;
 
   Future<DelayPrediction> predict({
     required Stop origin,
@@ -36,13 +40,27 @@ class DelayPredictionService {
       (stop) => stop.gtfsStopId == origin.gtfsStopId,
       orElse: () => origin,
     );
+    final calculatedAt = DateTime.now();
+    final firstRoute = routes.isEmpty ? null : routes.first;
+    final modelEstimate = await _modelService.estimate(
+      weather: weather,
+      calculatedAt: calculatedAt,
+      transportDescription: [
+        currentOrigin.transportMode,
+        destination.transportMode,
+        if (firstRoute != null) firstRoute.mode,
+        currentOrigin.routeLabel,
+        destination.routeLabel,
+      ].join(' '),
+    );
     return calculate(
       origin: currentOrigin,
       destination: destination,
       routes: routes,
       weather: weather,
       scheduleAvailable: lookup.source != TransitDataSource.unavailable,
-      calculatedAt: DateTime.now(),
+      calculatedAt: calculatedAt,
+      modelEstimate: modelEstimate,
     );
   }
 
@@ -53,6 +71,7 @@ class DelayPredictionService {
     required CurrentWeather weather,
     required bool scheduleAvailable,
     required DateTime calculatedAt,
+    DelayModelEstimate? modelEstimate,
   }) {
     var score = 0;
     var delayMinutes = 0;
@@ -114,7 +133,15 @@ class DelayPredictionService {
       factors.add('The next scheduled departure is due within 10 minutes.');
     }
 
-    if (weather.isLive) {
+    if (modelEstimate != null) {
+      final learnedDelay = modelEstimate.expectedDelayMinutes.ceil();
+      delayMinutes += learnedDelay;
+      score += (learnedDelay * 7).clamp(0, 42);
+      factors.add(
+          'A validated bus model estimates $learnedDelay extra minute${learnedDelay == 1 ? '' : 's'} from current conditions.');
+      factors.add(
+          'Model validation error: ${modelEstimate.validationMae.toStringAsFixed(1)} min across ${modelEstimate.sampleCount} observations.');
+    } else if (weather.isLive) {
       final rain = weather.precipitationMm;
       if (rain >= 7.5) {
         score += 34;
@@ -141,11 +168,13 @@ class DelayPredictionService {
         : score >= 35
             ? 'MEDIUM RISK'
             : 'LOW RISK';
-    final confidence = scheduleAvailable && weather.isLive
-        ? 'Medium'
-        : scheduleAvailable
-            ? 'Low–medium'
-            : 'Low';
+    final confidence = modelEstimate != null && scheduleAvailable
+        ? (modelEstimate.sampleCount >= 5000 ? 'Medium–high' : 'Medium')
+        : scheduleAvailable && weather.isLive
+            ? 'Medium'
+            : scheduleAvailable
+                ? 'Low–medium'
+                : 'Low';
     return DelayPrediction(
       riskScore: score,
       expectedDelayMinutes: delayMinutes,
@@ -165,10 +194,13 @@ class DelayPredictionService {
       totalEstimatedMinutes:
           routes.isEmpty ? 0 : routes.first.totalMinutes + delayMinutes,
       factors: factors,
-      sourceSummary: weather.isLive
-          ? 'Official GTFS schedule + current Open-Meteo weather'
-          : 'Official GTFS schedule; live weather unavailable',
+      sourceSummary: modelEstimate != null
+          ? 'Validated Firebase bus model ${modelEstimate.version} + official GTFS schedule'
+          : weather.isLive
+              ? 'Official GTFS schedule + current Open-Meteo weather'
+              : 'Official GTFS schedule; live weather unavailable',
       calculatedAt: calculatedAt,
+      usedTrainedModel: modelEstimate != null,
     );
   }
 }

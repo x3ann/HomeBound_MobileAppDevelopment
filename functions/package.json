@@ -1,0 +1,17 @@
+{
+  "name": "homebound-transit-model-backend",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.3.0",
+    "firebase-functions": "^7.3.2",
+    "gtfs-realtime-bindings": "^2.2.0"
+  }
+}

@@ -10,6 +10,7 @@ class DelayPrediction {
   final List<String> factors;
   final String sourceSummary;
   final DateTime calculatedAt;
+  final bool usedTrainedModel;
 
   const DelayPrediction({
     required this.riskScore,
@@ -23,6 +24,7 @@ class DelayPrediction {
     required this.factors,
     required this.sourceSummary,
     required this.calculatedAt,
+    this.usedTrainedModel = false,
   });
 }
 
