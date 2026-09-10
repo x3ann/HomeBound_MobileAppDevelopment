@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import '../../shared/models/route_model.dart';
 import '../../services/location_service.dart';
 import '../../services/place_search_service.dart';
+import '../../services/saved_place_service.dart';
 import '../../services/transit_repository.dart';
 import '../../shared/models/stop.dart';
+import '../../shared/models/saved_place.dart';
 import '../../shared/theme/app_theme.dart';
 import 'widgets/location_field.dart';
 import 'widgets/route_card.dart';
@@ -36,10 +38,13 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
   Stop? _selectedDestination;
   Stop? _currentLocation;
   final _placeSearch = PlaceSearchService();
+  final _savedPlaceService = SavedPlaceService();
+  List<SavedPlace> _savedPlaces = const [];
 
   @override
   void initState() {
     super.initState();
+    _loadSavedPlaces();
     _fillCurrentLocation();
   }
 
@@ -74,6 +79,36 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               _selectedOrigin = stop;
               _originSuggestions = const [];
             }),
+          ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            const Text('Saved origins',
+                style: TextStyle(fontSize: 12, color: Color(0xFF9BA0C2))),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: _selectedOrigin == null ? null : _saveCurrentOrigin,
+              icon: const Icon(Icons.bookmark_add_outlined, size: 17),
+              label: const Text('Save origin'),
+            ),
+          ],
+        ),
+        if (_savedPlaces.isEmpty)
+          const Text('Save Home, Work, or another frequent starting point.',
+              style: TextStyle(fontSize: 11, color: Color(0xFF9BA0C2)))
+        else
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: _savedPlaces
+                .map((place) => InputChip(
+                      avatar: Icon(_savedPlaceIcon(place.slot), size: 17),
+                      label: Text(place.slot),
+                      tooltip: place.name,
+                      onPressed: () => _useSavedPlace(place),
+                      onDeleted: () => _removeSavedPlace(place),
+                    ))
+                .toList(),
           ),
         Align(
           alignment: Alignment.center,
@@ -149,7 +184,16 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
                 'No scheduled rail journey was found for these stations today.',
                 style: TextStyle(fontSize: 13, color: Color(0xFF9BA0C2)))
           else
-            ..._routes.map((r) => RouteCard(route: r)),
+            ..._routes.asMap().entries.map((entry) => RouteCard(
+                  route: entry.value,
+                  optionIndex: entry.key,
+                  onTap: () => showModalBottomSheet<void>(
+                    context: context,
+                    isScrollControlled: true,
+                    backgroundColor: Colors.transparent,
+                    builder: (_) => RouteDetailsSheet(route: entry.value),
+                  ),
+                )),
         ],
       ],
     );
@@ -289,6 +333,79 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
     }
     return unique.values.take(8).toList();
   }
+
+  Future<void> _loadSavedPlaces() async {
+    try {
+      final places = await _savedPlaceService.load();
+      if (mounted) setState(() => _savedPlaces = places);
+    } catch (_) {
+      // Planning remains available when local preferences are unavailable.
+    }
+  }
+
+  Future<void> _saveCurrentOrigin() async {
+    final origin = _selectedOrigin;
+    if (origin == null) return;
+    final slot = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Save origin as'),
+        children: [
+          for (final value in const ['Home', 'Work', 'Other'])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, value),
+              child: ListTile(
+                leading: Icon(_savedPlaceIcon(value)),
+                title: Text(value),
+                subtitle: Text(origin.name,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (slot == null) return;
+    await _savedPlaceService.save(SavedPlace(
+      slot: slot,
+      name: origin.name,
+      position: origin.position,
+    ));
+    await _loadSavedPlaces();
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('$slot origin saved.')));
+    }
+  }
+
+  void _useSavedPlace(SavedPlace place) {
+    final stop = Stop(
+      name: place.name,
+      platform: 'Saved ${place.slot} location',
+      position: place.position,
+      timeToDeparture: Duration.zero,
+      urgency: ServiceUrgency.onTime,
+      transportMode: 'Place',
+      hasDepartureData: false,
+    );
+    setState(() {
+      _selectedOrigin = stop;
+      _originController.text = place.name;
+      _originSuggestions = const [];
+      _routes = const [];
+      _searched = false;
+    });
+  }
+
+  Future<void> _removeSavedPlace(SavedPlace place) async {
+    await _savedPlaceService.remove(place.slot);
+    await _loadSavedPlaces();
+  }
+
+  IconData _savedPlaceIcon(String slot) => switch (slot) {
+        'Home' => Icons.home_rounded,
+        'Work' => Icons.work_rounded,
+        _ => Icons.place_rounded,
+      };
 }
 
 class _SuggestionList extends StatelessWidget {

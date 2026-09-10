@@ -26,6 +26,7 @@ void main() {
     final time = DateTime(2026, 9, 9, 20);
     final first = DelayPredictionService.calculate(
       origin: origin,
+      destination: origin,
       routes: const [route],
       weather: const CurrentWeather(
           precipitationMm: 0, weatherCode: 0, isLive: true),
@@ -34,6 +35,7 @@ void main() {
     );
     final second = DelayPredictionService.calculate(
       origin: origin,
+      destination: origin,
       routes: const [route],
       weather: const CurrentWeather(
           precipitationMm: 0, weatherCode: 0, isLive: true),
@@ -51,6 +53,7 @@ void main() {
   test('heavy rain increases risk and estimated delay', () {
     final clear = DelayPredictionService.calculate(
       origin: origin,
+      destination: origin,
       routes: const [route],
       weather: const CurrentWeather(
           precipitationMm: 0, weatherCode: 0, isLive: true),
@@ -59,6 +62,7 @@ void main() {
     );
     final rainy = DelayPredictionService.calculate(
       origin: origin,
+      destination: origin,
       routes: const [route],
       weather: const CurrentWeather(
           precipitationMm: 9, weatherCode: 65, isLive: true),
@@ -68,5 +72,41 @@ void main() {
 
     expect(rainy.riskScore, greaterThan(clear.riskScore));
     expect(rainy.expectedDelayMinutes, greaterThan(clear.expectedDelayMinutes));
+  });
+
+  test('changing transport type and line increases transfer risk', () {
+    const destination = Stop(
+      name: 'Destination',
+      platform: 'LRT station',
+      position: LatLng(3.2, 101.7),
+      timeToDeparture: Duration(minutes: 5),
+      urgency: ServiceUrgency.onTime,
+      transportMode: 'LRT',
+      routeLabel: 'KJL — Kelana Jaya Line',
+    );
+    final direct = DelayPredictionService.calculate(
+      origin: origin,
+      destination: origin.copyWith(routeLabel: 'KGL — Kajang Line'),
+      routes: const [route],
+      weather: const CurrentWeather(
+          precipitationMm: 0, weatherCode: 0, isLive: true),
+      scheduleAvailable: true,
+      calculatedAt: DateTime(2026, 9, 9),
+    );
+    final transfer = DelayPredictionService.calculate(
+      origin: origin.copyWith(
+          transportMode: 'MRT', routeLabel: 'KGL — Kajang Line'),
+      destination: destination,
+      routes: const [route],
+      weather: const CurrentWeather(
+          precipitationMm: 0, weatherCode: 0, isLive: true),
+      scheduleAvailable: true,
+      calculatedAt: DateTime(2026, 9, 9),
+    );
+
+    expect(transfer.riskScore, greaterThan(direct.riskScore));
+    expect(transfer.expectedDelayMinutes,
+        greaterThan(direct.expectedDelayMinutes));
+    expect(transfer.factors, contains(contains('switches from MRT to LRT')));
   });
 }

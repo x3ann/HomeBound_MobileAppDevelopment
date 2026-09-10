@@ -38,6 +38,7 @@ class DelayPredictionService {
     );
     return calculate(
       origin: currentOrigin,
+      destination: destination,
       routes: routes,
       weather: weather,
       scheduleAvailable: lookup.source != TransitDataSource.unavailable,
@@ -47,6 +48,7 @@ class DelayPredictionService {
 
   static DelayPrediction calculate({
     required Stop origin,
+    required Stop destination,
     required List<RouteOption> routes,
     required CurrentWeather weather,
     required bool scheduleAvailable,
@@ -67,6 +69,31 @@ class DelayPredictionService {
         delayMinutes += transfers * 2;
         factors.add(
             '$transfers transfer${transfers == 1 ? '' : 's'} adds connection risk.');
+      }
+      final originModes = origin.transportMode
+          .split('/')
+          .map((value) => value.trim().toLowerCase())
+          .toSet();
+      final destinationModes = destination.transportMode
+          .split('/')
+          .map((value) => value.trim().toLowerCase())
+          .toSet();
+      if (originModes.intersection(destinationModes).isEmpty) {
+        score += 7;
+        delayMinutes += 2;
+        factors.add(
+            'This journey switches from ${origin.transportMode} to ${destination.transportMode}.');
+      }
+      final originLines = origin.routeLabel.split(' · ').toSet()
+        ..removeWhere((value) => value.isEmpty);
+      final destinationLines = destination.routeLabel.split(' · ').toSet()
+        ..removeWhere((value) => value.isEmpty);
+      if (originLines.isNotEmpty &&
+          destinationLines.isNotEmpty &&
+          originLines.intersection(destinationLines).isEmpty) {
+        score += 6;
+        delayMinutes += 2;
+        factors.add('A line interchange adds extra platform and waiting time.');
       }
     }
 
@@ -127,7 +154,7 @@ class DelayPredictionService {
       weatherSummary: weather.summary,
       serviceSummary: routes.isEmpty
           ? 'No route found'
-          : '${routes.length} scheduled option${routes.length == 1 ? '' : 's'} found',
+          : '${routes.first.totalMinutes} min · ${routes.first.transferCount} transfer${routes.first.transferCount == 1 ? '' : 's'}',
       estimatedArrival: routes.isEmpty
           ? 'Unavailable'
           : (routes.first.arrivalTime.isNotEmpty

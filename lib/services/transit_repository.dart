@@ -143,25 +143,26 @@ class TransitRepository {
       GtfsService.fetchShapes(category: 'rapid-rail-kl'),
       GtfsService.fetchTrips(category: 'rapid-rail-kl'),
       GtfsService.fetchRoutes(category: 'rapid-rail-kl'),
+      GtfsService.fetchStops(category: 'rapid-rail-kl'),
+      GtfsService.fetchStopTimes(category: 'rapid-rail-kl'),
     ]);
     final shapePoints = results[0] as List<GtfsShapePoint>;
     final trips = results[1] as List<GtfsTrip>;
     final routes = results[2] as List<GtfsRoute>;
-    final routeNames = {
-      for (final route in routes)
-        route.routeId: route.shortName.trim().isNotEmpty
-            ? route.shortName.trim()
-            : route.longName.trim(),
-    };
-    final routeByShape = <String, String>{};
+    final stops = results[3] as List<GtfsStop>;
+    final stopTimes = results[4] as List<GtfsStopTime>;
+    final routeById = {for (final route in routes) route.routeId: route};
+    final routeIdsByShape = <String, Set<String>>{};
     for (final trip in trips) {
       if (trip.shapeId.isNotEmpty) {
-        routeByShape[trip.shapeId] = routeNames[trip.routeId] ?? trip.routeId;
+        routeIdsByShape
+            .putIfAbsent(trip.shapeId, () => <String>{})
+            .add(trip.routeId);
       }
     }
     final grouped = <String, List<GtfsShapePoint>>{};
     for (final point in shapePoints) {
-      if (routeByShape.containsKey(point.shapeId)) {
+      if (routeIdsByShape.containsKey(point.shapeId)) {
         grouped.putIfAbsent(point.shapeId, () => []).add(point);
       }
     }
@@ -175,22 +176,67 @@ class TransitRepository {
       Color(0xFFFB8C00),
       Color(0xFF6D4C41),
     ];
-    final labels = routeByShape.values.toSet().toList()..sort();
+    final labels = routes.map((route) => route.displayName).toSet().toList()
+      ..sort();
     final colorByRoute = {
       for (var i = 0; i < labels.length; i++)
         labels[i]: colors[i % colors.length]
     };
-    return grouped.entries.map((entry) {
+    final shapes = <TransitShape>[];
+    final coveredRouteIds = <String>{};
+    for (final entry in grouped.entries) {
       final ordered = entry.value
         ..sort((a, b) => a.sequence.compareTo(b.sequence));
-      final label = routeByShape[entry.key] ?? 'Rapid Rail';
-      return TransitShape(
-        id: entry.key,
-        routeLabel: label,
-        points: ordered.map((point) => LatLng(point.lat, point.lon)).toList(),
-        color: colorByRoute[label]!,
-      );
-    }).toList();
+      for (final routeId in routeIdsByShape[entry.key] ?? const <String>{}) {
+        final route = routeById[routeId];
+        if (route == null) continue;
+        coveredRouteIds.add(routeId);
+        shapes.add(TransitShape(
+          id: '${entry.key}|$routeId',
+          routeLabel: route.displayName,
+          transportMode: route.modeLabel,
+          points: ordered.map((point) => LatLng(point.lat, point.lon)).toList(),
+          color: colorByRoute[route.displayName] ?? colors.first,
+        ));
+      }
+    }
+
+    // Some feeds omit shapes for individual lines. Build a conservative
+    // fallback from the longest published stop sequence for that route.
+    final stopById = {for (final stop in stops) stop.stopId: stop};
+    final timesByTrip = <String, List<GtfsStopTime>>{};
+    for (final time in stopTimes) {
+      timesByTrip.putIfAbsent(time.tripId, () => []).add(time);
+    }
+    for (final route
+        in routes.where((route) => !coveredRouteIds.contains(route.routeId))) {
+      final candidates = trips
+          .where((trip) => trip.routeId == route.routeId)
+          .map((trip) => MapEntry(
+                trip,
+                timesByTrip[trip.tripId] ?? const <GtfsStopTime>[],
+              ))
+          .where((entry) => entry.value.length > 1)
+          .toList()
+        ..sort((a, b) => b.value.length.compareTo(a.value.length));
+      if (candidates.isEmpty) continue;
+      final ordered = [...candidates.first.value]
+        ..sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
+      final points = ordered
+          .map((time) => stopById[time.stopId])
+          .whereType<GtfsStop>()
+          .map((stop) => LatLng(stop.lat, stop.lon))
+          .toList();
+      if (points.length < 2) continue;
+      shapes.add(TransitShape(
+        id: 'stops|${route.routeId}',
+        routeLabel: route.displayName,
+        transportMode: route.modeLabel,
+        points: points,
+        color: colorByRoute[route.displayName] ?? colors.first,
+      ));
+    }
+    return shapes;
   }
 
   /// Official station directory for origin and destination autocomplete.
@@ -366,10 +412,7 @@ class TransitRepository {
     final nowSeconds = GtfsService.secondsIntoServiceDay(now);
     final byTrip = _tripInstances();
     final routeNames = {
-      for (final route in _routes!)
-        route.routeId: route.shortName.trim().isNotEmpty
-            ? route.shortName.trim()
-            : route.longName.trim()
+      for (final route in _routes!) route.routeId: route.displayName
     };
     final routeByTrip = {
       for (final trip in _trips!)
@@ -473,9 +516,7 @@ class TransitRepository {
     };
     final routeNames = {
       for (final route in _routes ?? const <GtfsRoute>[])
-        route.routeId: route.shortName.trim().isNotEmpty
-            ? route.shortName.trim()
-            : route.longName.trim(),
+        route.routeId: route.displayName,
     };
     final routeByTrip = {
       for (final trip in _trips ?? const <GtfsTrip>[])
@@ -541,6 +582,8 @@ class TransitRepository {
             ? state.steps
             : [
                 ...state.steps,
+                if (state.tripInstanceId != null)
+                  'Change service at $fromName · allow at least 1 min',
                 'Take ${connection.routeLabel} from $fromName',
               ];
         final routes = continuing ||
@@ -583,7 +626,11 @@ class TransitRepository {
         etaSummary:
             'Arrives ${GtfsService.formatSecondsAsClock(result.time)} · ${(result.time - result.departure) ~/ 60} min · ${math.max(0, result.rides - 1)} transfer${result.rides == 2 ? '' : 's'}',
         status: ServiceUrgency.onTime,
-        steps: [...result.steps, 'Arrive at $destinationName'],
+        steps: [
+          ...result.steps,
+          'Get off at $destinationName',
+          'Arrive at $destinationName',
+        ],
         transferCount: math.max(0, result.rides - 1),
         arrivalTime: GtfsService.formatSecondsAsClock(result.time),
         totalMinutes: (result.time - result.departure) ~/ 60,
