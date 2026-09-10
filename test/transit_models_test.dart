@@ -3,11 +3,127 @@ import 'package:homebound/services/transit_repository.dart';
 import 'package:homebound/services/gtfs_service.dart';
 import 'package:homebound/services/gtfs_models.dart';
 import 'package:homebound/shared/models/stop.dart';
+import 'package:homebound/shared/models/planned_journey.dart';
 import 'package:homebound/shared/models/route_model.dart';
 import 'package:homebound/shared/theme/app_theme.dart';
 import 'package:latlong2/latlong.dart';
 
 void main() {
+  test('long journey durations use hours and minutes', () {
+    expect(RouteOption.formatMinutes(52), '52 min');
+    expect(RouteOption.formatMinutes(60), '1h');
+    expect(RouteOption.formatMinutes(404), '6h 44m');
+  });
+
+  test('departure proximity labels describe the next arrival', () {
+    expect(ServiceUrgency.onTime.label, 'SCHEDULED');
+    expect(ServiceUrgency.closingSoon.label, 'ARRIVING SOON');
+    expect(ServiceUrgency.critical.label, 'DUE SOON');
+  });
+
+  test('planned journey reports scheduled progress and active instruction', () {
+    const endpoint = Stop(
+      name: 'Station',
+      platform: 'Rail station',
+      position: LatLng(3.1390, 101.6869),
+      timeToDeparture: Duration.zero,
+      urgency: ServiceUrgency.onTime,
+    );
+    const journey = PlannedJourney(
+      origin: endpoint,
+      destination: endpoint,
+      route: RouteOption(
+        departureTime: '8:00 AM',
+        arrivalTime: '8:30 AM',
+        mode: 'MRT',
+        etaSummary: '30 min',
+        status: ServiceUrgency.onTime,
+        totalMinutes: 30,
+        departureServiceSeconds: 8 * 3600,
+        arrivalServiceSeconds: 8 * 3600 + 30 * 60,
+        steps: ['Board', 'Ride', 'Exit'],
+        checkpoints: [
+          RouteCheckpoint(
+            name: 'Interchange',
+            position: LatLng(3.15, 101.69),
+            instruction: 'Change line',
+            serviceSeconds: 8 * 3600 + 10 * 60,
+          ),
+        ],
+      ),
+    );
+
+    expect(journey.progressAt(8 * 3600), 0);
+    expect(journey.progressAt(8 * 3600 + 15 * 60), closeTo(.5, .001));
+    expect(journey.activeStepAt(8 * 3600 + 15 * 60), 1);
+    expect(journey.progressAt(9 * 3600), 1);
+    expect(journey.route.checkpoints.single.name, 'Interchange');
+    expect(journey.activeCheckpointAt(8 * 3600 + 15 * 60), 0);
+  });
+
+  test('planned journey progress includes walking and waiting time', () {
+    const route = RouteOption(
+      departureTime: '8:10 AM',
+      arrivalTime: '8:30 AM',
+      mode: 'Bus',
+      etaSummary: '30 min total',
+      status: ServiceUrgency.onTime,
+      totalMinutes: 30,
+      departureServiceSeconds: 8 * 3600 + 10 * 60,
+      arrivalServiceSeconds: 8 * 3600 + 30 * 60,
+    );
+
+    expect(route.journeyStartServiceSeconds, 8 * 3600);
+    expect(route.progressAt(8 * 3600 + 5 * 60), closeTo(1 / 6, .001));
+  });
+
+  test('planned journey follows a phone position near its checkpoints', () {
+    const origin = Stop(
+      name: 'Origin',
+      platform: 'Rail station',
+      position: LatLng(3.0, 101.0),
+      timeToDeparture: Duration.zero,
+      urgency: ServiceUrgency.onTime,
+    );
+    const destination = Stop(
+      name: 'Destination',
+      platform: 'Rail station',
+      position: LatLng(3.0, 101.02),
+      timeToDeparture: Duration.zero,
+      urgency: ServiceUrgency.onTime,
+    );
+    const journey = PlannedJourney(
+      origin: origin,
+      destination: destination,
+      route: RouteOption(
+        departureTime: '8:00 AM',
+        arrivalTime: '8:30 AM',
+        mode: 'MRT',
+        etaSummary: '30 min',
+        status: ServiceUrgency.onTime,
+        steps: ['Start', 'Change', 'Arrive'],
+        checkpoints: [
+          RouteCheckpoint(
+            name: 'Middle',
+            position: LatLng(3.0, 101.01),
+            instruction: 'Change line',
+          ),
+        ],
+      ),
+    );
+
+    expect(
+        journey.progressForPosition(const LatLng(3.0, 101.0)), closeTo(0, .01));
+    expect(journey.progressForPosition(const LatLng(3.0, 101.01)),
+        closeTo(.5, .02));
+    expect(journey.progressForPosition(const LatLng(3.0, 101.02)),
+        closeTo(1, .01));
+    expect(
+      journey.progressForPosition(const LatLng(3.02, 101.01)),
+      isNull,
+    );
+  });
+
   test('GTFS CSV parser keeps rows after quoted CRLF fields', () {
     final rows = GtfsService.parseCsvContent(
       'id,name\r\n1,Before\r\n2,"MITSUI OUTLET , KLIA 2"\r\n3,After\r\n',

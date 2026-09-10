@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../shared/theme/app_theme.dart';
 
-/// Small pill showing urgency status (ON TIME / CLOSING SOON / CRITICAL).
+/// Small pill showing departure proximity (SCHEDULED / ARRIVING SOON / DUE SOON).
 /// Used by the Last Service Tracker countdown card.
 class StatusChip extends StatelessWidget {
   final ServiceUrgency urgency;

@@ -15,8 +15,14 @@ class BusArrivalService {
   static final instance = BusArrivalService._();
 
   final Map<String, Future<_BusSchedule>> _cache = {};
+  final Map<String, DateTime> _cacheLoadedAt = {};
+  final Map<String, String> _cacheServiceDate = {};
 
-  void clearCache() => _cache.clear();
+  void clearCache() {
+    _cache.clear();
+    _cacheLoadedAt.clear();
+    _cacheServiceDate.clear();
+  }
 
   Future<List<Stop>> searchScheduledStops(String query, {int limit = 8}) async {
     final needle = query.trim().toLowerCase();
@@ -63,6 +69,63 @@ class BusArrivalService {
           ));
     }).toList()
       ..sort((a, b) => a.name.compareTo(b.name));
+  }
+
+  Future<List<BusArrivalEstimate>> nearbyScheduledArrivals({
+    required LatLng userLocation,
+    double radiusMeters = 2000,
+    String category = 'rapid-bus-kl',
+  }) async {
+    final schedule = await _scheduleFor(category);
+    final nowSeconds = GtfsService.secondsIntoServiceDay(DateTime.now());
+    const distance = Distance();
+    final estimates = <BusArrivalEstimate>[];
+    for (final stop in schedule.stops.values) {
+      final position = LatLng(stop.lat, stop.lon);
+      final meters = distance.as(LengthUnit.Meter, userLocation, position);
+      if (meters > radiusMeters) continue;
+      final byRoute = schedule.departuresByStopAndRoute[stop.stopId];
+      if (byRoute == null) continue;
+      for (final entry in byRoute.entries) {
+        final departures = entry.value;
+        if (departures.isEmpty ||
+            nowSeconds < departures.first ||
+            nowSeconds >= departures.last) {
+          continue;
+        }
+        final next =
+            departures.where((value) => value > nowSeconds).firstOrNull;
+        if (next == null) continue;
+        final eta = Duration(seconds: next - nowSeconds);
+        estimates.add(BusArrivalEstimate(
+          stop: Stop(
+            name: stop.name,
+            platform: 'Bus stop · ${entry.key}',
+            position: position,
+            timeToDeparture: eta,
+            urgency: eta <= const Duration(minutes: 5)
+                ? ServiceUrgency.critical
+                : eta <= const Duration(minutes: 20)
+                    ? ServiceUrgency.closingSoon
+                    : ServiceUrgency.onTime,
+            gtfsStopId: stop.stopId,
+            distanceMeters: meters,
+            transportMode: 'Bus',
+            routeLabel: entry.key,
+            lastService: GtfsService.formatSecondsAsClock(departures.last),
+          ),
+          routeLabel: entry.key,
+          vehicleId: '',
+          eta: eta,
+        ));
+      }
+    }
+    estimates.sort((a, b) {
+      final byDistance = (a.stop.distanceMeters ?? double.infinity)
+          .compareTo(b.stop.distanceMeters ?? double.infinity);
+      return byDistance != 0 ? byDistance : a.eta.compareTo(b.eta);
+    });
+    return estimates;
   }
 
   /// Finds direct scheduled bus journeys whose boarding and alighting stops
@@ -141,7 +204,7 @@ class BusArrivalService {
             arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
             mode: 'Bus · $routeLabel',
             etaSummary:
-                'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · $totalMinutes min total',
+                'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
             status: ServiceUrgency.onTime,
             transferCount: 0,
             totalMinutes: totalMinutes,
@@ -156,6 +219,20 @@ class BusArrivalService {
               'Get off at ${egress.stop.name} around ${GtfsService.formatSecondsAsClock(arrival)}',
               'Walk ${(egressSeconds / 60).ceil()} min (${egress.meters.round()} m) to ${destination.name}',
               'Arrive at ${destination.name} around ${GtfsService.formatSecondsAsClock(finalArrival)}',
+            ],
+            checkpoints: [
+              RouteCheckpoint(
+                name: access.stop.name,
+                position: LatLng(access.stop.lat, access.stop.lon),
+                instruction: 'Board bus $routeLabel',
+                serviceSeconds: departure,
+              ),
+              RouteCheckpoint(
+                name: egress.stop.name,
+                position: LatLng(egress.stop.lat, egress.stop.lon),
+                instruction: 'Leave bus $routeLabel',
+                serviceSeconds: arrival,
+              ),
             ],
           ));
           break;
@@ -245,7 +322,7 @@ class BusArrivalService {
               arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
               mode: 'Bus · $firstRoute → ${inbound.routeLabel}',
               etaSummary:
-                  'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · $totalMinutes min total',
+                  'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
               status: ServiceUrgency.onTime,
               transferCount: 1,
               totalMinutes: totalMinutes,
@@ -260,6 +337,26 @@ class BusArrivalService {
                 'Get off around ${GtfsService.formatSecondsAsClock(inbound.arrival)}',
                 'Walk ${(egressSeconds / 60).ceil()} min (${inbound.endpointWalkMeters.round()} m) to ${destination.name}',
                 'Arrive at ${destination.name} around ${GtfsService.formatSecondsAsClock(finalArrival)}',
+              ],
+              checkpoints: [
+                RouteCheckpoint(
+                  name: access.stop.name,
+                  position: LatLng(access.stop.lat, access.stop.lon),
+                  instruction: 'Board bus $firstRoute',
+                  serviceSeconds: departure,
+                ),
+                RouteCheckpoint(
+                  name: transferStop.name,
+                  position: LatLng(transferStop.lat, transferStop.lon),
+                  instruction: 'Change to bus ${inbound.routeLabel}',
+                  serviceSeconds: inbound.departure,
+                ),
+                RouteCheckpoint(
+                  name: inbound.toStop.name,
+                  position: LatLng(inbound.toStop.lat, inbound.toStop.lon),
+                  instruction: 'Leave bus ${inbound.routeLabel}',
+                  serviceSeconds: inbound.arrival,
+                ),
               ],
             ));
             if (candidates.length >= 20) break outer;
@@ -310,9 +407,9 @@ class BusArrivalService {
                 routeLabel.isEmpty ? 'Bus stop' : 'Bus stop · $routeLabel',
             position: position,
             timeToDeparture: remaining,
-            urgency: !operating || remaining.inMinutes <= 5
+            urgency: !operating || remaining <= const Duration(minutes: 5)
                 ? ServiceUrgency.critical
-                : remaining.inMinutes <= 20
+                : remaining <= const Duration(minutes: 20)
                     ? ServiceUrgency.closingSoon
                     : ServiceUrgency.onTime,
             gtfsStopId: stop.stopId,
@@ -359,9 +456,9 @@ class BusArrivalService {
           : 'Bus stop · ${resolvedLabels.join(' · ')}',
       position: LatLng(stop.lat, stop.lon),
       timeToDeparture: remaining,
-      urgency: !operating || remaining.inMinutes <= 5
+      urgency: !operating || remaining <= const Duration(minutes: 5)
           ? ServiceUrgency.critical
-          : remaining.inMinutes <= 20
+          : remaining <= const Duration(minutes: 20)
               ? ServiceUrgency.closingSoon
               : ServiceUrgency.onTime,
       gtfsStopId: stop.stopId,
@@ -454,6 +551,7 @@ class BusArrivalService {
             routeLabel: routeLabel,
             hasDepartureData: true,
             isOperating: true,
+            isLiveEstimate: true,
           ),
           routeLabel: routeLabel,
           vehicleId: vehicle.id,
@@ -510,10 +608,27 @@ class BusArrivalService {
   }
 
   Future<_BusSchedule> _scheduleFor(String category) async {
+    final now = DateTime.now();
+    final serviceDate = GtfsService.dateStamp(GtfsService.serviceDateFor(now));
+    final loadedAt = _cacheLoadedAt[category];
+    final stale = loadedAt == null ||
+        now.difference(loadedAt) > const Duration(minutes: 30) ||
+        _cacheServiceDate[category] != serviceDate;
+    if (stale) {
+      _cache.remove(category);
+      _cacheLoadedAt.remove(category);
+      _cacheServiceDate.remove(category);
+    }
     try {
-      return await _cache.putIfAbsent(category, () => _load(category));
+      final schedule =
+          await _cache.putIfAbsent(category, () => _load(category));
+      _cacheLoadedAt.putIfAbsent(category, () => now);
+      _cacheServiceDate.putIfAbsent(category, () => serviceDate);
+      return schedule;
     } catch (_) {
       _cache.remove(category);
+      _cacheLoadedAt.remove(category);
+      _cacheServiceDate.remove(category);
       rethrow;
     }
   }

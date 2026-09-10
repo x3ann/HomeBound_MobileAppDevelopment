@@ -5,6 +5,7 @@ import '../../services/delay_prediction_service.dart';
 import '../../services/bus_arrival_service.dart';
 import '../../services/transit_repository.dart';
 import '../../shared/models/delay_prediction.dart';
+import '../../shared/models/route_model.dart';
 import '../../shared/models/stop.dart';
 import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/data_source_badge.dart';
@@ -381,7 +382,7 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
               'Total estimated journey time',
               result.totalEstimatedMinutes <= 0
                   ? 'Unavailable'
-                  : '${result.totalEstimatedMinutes} min',
+                  : RouteOption.formatMinutes(result.totalEstimatedMinutes),
             ),
           ),
           const SizedBox(height: 10),

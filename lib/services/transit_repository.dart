@@ -197,13 +197,17 @@ class TransitRepository {
         : stop.copyWith(liveRailEstimate: estimate.text);
   }
 
-  Future<List<TransitShape>> getRailShapes() async {
+  Future<List<TransitShape>> getRailShapes() =>
+      getTransitShapes(category: 'rapid-rail-kl');
+
+  Future<List<TransitShape>> getTransitShapes(
+      {required String category}) async {
     final results = await Future.wait([
-      GtfsService.fetchShapes(category: 'rapid-rail-kl'),
-      GtfsService.fetchTrips(category: 'rapid-rail-kl'),
-      GtfsService.fetchRoutes(category: 'rapid-rail-kl'),
-      GtfsService.fetchStops(category: 'rapid-rail-kl'),
-      GtfsService.fetchStopTimes(category: 'rapid-rail-kl'),
+      GtfsService.fetchShapes(category: category),
+      GtfsService.fetchTrips(category: category),
+      GtfsService.fetchRoutes(category: category),
+      GtfsService.fetchStops(category: category),
+      GtfsService.fetchStopTimes(category: category),
     ]);
     final shapePoints = results[0] as List<GtfsShapePoint>;
     final trips = results[1] as List<GtfsTrip>;
@@ -333,16 +337,10 @@ class TransitRepository {
     Stop origin,
     Stop destination,
   ) async {
-    final busFuture = Future.wait(
-      ['rapid-bus-kl', 'rapid-bus-mrtfeeder'].map(
-        (category) => BusArrivalService.instance
-            .planScheduledRoutes(
-              origin: origin,
-              destination: destination,
-              category: category,
-            )
-            .catchError((_) => <RouteOption>[]),
-      ),
+    final busFuture = _planBusAlternatives(
+      origin,
+      destination,
+      maximumWalkMeters: 1500,
     );
     final railOptions = <RouteOption>[];
     try {
@@ -379,12 +377,13 @@ class TransitRepository {
         );
         railOptions.addAll(routes.map((route) {
           final finalArrival = route.arrivalServiceSeconds + egressSeconds;
-          final totalMinutes = math.max(1, (finalArrival - nowSeconds) ~/ 60);
+          final totalMinutes =
+              math.max(1, ((finalArrival - nowSeconds) / 60).ceil());
           return RouteOption(
             departureTime: route.departureTime,
             mode: route.mode,
             etaSummary:
-                'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · $totalMinutes min total',
+                'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
             status: route.status,
             steps: [
               if (accessSeconds > 0)
@@ -394,6 +393,7 @@ class TransitRepository {
                 'Exit the station and walk ${(egressSeconds / 60).ceil()} min (${egressMeters.round()} m) to ${destination.name}',
               'Arrive at ${destination.name} around ${GtfsService.formatSecondsAsClock(finalArrival)}',
             ],
+            checkpoints: route.checkpoints,
             transferCount: route.transferCount,
             arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
             totalMinutes: totalMinutes,
@@ -406,11 +406,41 @@ class TransitRepository {
     } catch (_) {
       // Bus planning remains useful when the rail schedule is unavailable.
     }
-    final busGroups = await busFuture;
+    var busOptions = await busFuture;
+    // A nearby bus route is useful as a variation even when it requires a
+    // longer access walk. Keep the normal result comfortable, then widen the
+    // verified official-feed search only when it found no bus at all.
+    if (busOptions.isEmpty) {
+      busOptions = await _planBusAlternatives(
+        origin,
+        destination,
+        maximumWalkMeters: 3000,
+      );
+    }
     return _rankMultimodal([
       ...railOptions,
-      ...busGroups.expand((options) => options),
+      ...busOptions,
     ]);
+  }
+
+  Future<List<RouteOption>> _planBusAlternatives(
+    Stop origin,
+    Stop destination, {
+    required double maximumWalkMeters,
+  }) async {
+    final groups = await Future.wait(
+      ['rapid-bus-kl', 'rapid-bus-mrtfeeder'].map(
+        (category) => BusArrivalService.instance
+            .planScheduledRoutes(
+              origin: origin,
+              destination: destination,
+              category: category,
+              maximumWalkMeters: maximumWalkMeters,
+            )
+            .catchError((_) => <RouteOption>[]),
+      ),
+    );
+    return groups.expand((options) => options).toList();
   }
 
   /// Keeps the fastest result first and deliberately surfaces the best
@@ -680,6 +710,7 @@ class TransitRepository {
           rides: 0,
           steps: const [],
           routes: const [],
+          checkpoints: const [],
         );
       }
       _relaxWalking(best, originIds, walking, stationById);
@@ -697,6 +728,7 @@ class TransitRepository {
             state.departure < 0 ? connection.departure : state.departure;
         final fromName =
             stationById[connection.fromStopId]?.name ?? connection.fromStopId;
+        final fromStop = stationById[connection.fromStopId];
         final steps = continuing
             ? state.steps
             : [
@@ -710,6 +742,19 @@ class TransitRepository {
                     state.routes.last == connection.routeLabel)
             ? state.routes
             : [...state.routes, connection.routeLabel];
+        final checkpoints = continuing || fromStop == null
+            ? state.checkpoints
+            : [
+                ...state.checkpoints,
+                RouteCheckpoint(
+                  name: fromName,
+                  position: fromStop.position,
+                  instruction: state.tripInstanceId == null
+                      ? 'Board ${connection.routeLabel}'
+                      : 'Change to ${connection.routeLabel}',
+                  serviceSeconds: connection.departure,
+                ),
+              ];
         final candidate = _JourneyState(
           stopId: connection.toStopId,
           time: connection.arrival,
@@ -718,6 +763,7 @@ class TransitRepository {
           rides: rides,
           steps: steps,
           routes: routes,
+          checkpoints: checkpoints,
         );
         final existing = best[connection.toStopId];
         if (existing == null ||
@@ -737,22 +783,34 @@ class TransitRepository {
       if (destinations.isEmpty) continue;
       final result = destinations.first;
       final destinationName = stationById[result.stopId]?.name ?? result.stopId;
+      final destinationStop = stationById[result.stopId];
       options.add(RouteOption(
         departureTime: GtfsService.formatSecondsAsClock(result.departure),
         mode: result.routes.isEmpty
             ? 'Walk'
             : 'Rapid Rail · ${result.routes.join(' → ')}',
         etaSummary:
-            'Arrives ${GtfsService.formatSecondsAsClock(result.time)} · ${(result.time - result.departure) ~/ 60} min · ${math.max(0, result.rides - 1)} transfer${result.rides == 2 ? '' : 's'}',
+            'Arrives ${GtfsService.formatSecondsAsClock(result.time)} · ${RouteOption.formatMinutes(((result.time - result.departure) / 60).ceil())} · ${math.max(0, result.rides - 1)} transfer${result.rides == 2 ? '' : 's'}',
         status: ServiceUrgency.onTime,
         steps: [
           ...result.steps,
           'Get off at $destinationName around ${GtfsService.formatSecondsAsClock(result.time)}',
           'Follow station signs to the correct exit at $destinationName',
         ],
+        checkpoints: [
+          ...result.checkpoints,
+          if (destinationStop != null)
+            RouteCheckpoint(
+              name: destinationName,
+              position: destinationStop.position,
+              instruction: 'Leave the service',
+              serviceSeconds: result.time,
+            ),
+        ],
         transferCount: math.max(0, result.rides - 1),
         arrivalTime: GtfsService.formatSecondsAsClock(result.time),
-        totalMinutes: (result.time - result.departure) ~/ 60,
+        totalMinutes:
+            math.max(1, ((result.time - result.departure) / 60).ceil()),
         departureServiceSeconds: result.departure,
         arrivalServiceSeconds: result.time,
       ));
@@ -834,6 +892,7 @@ class TransitRepository {
           rides: state.rides,
           steps: [...state.steps, 'Walk $minutes min to $destination'],
           routes: state.routes,
+          checkpoints: state.checkpoints,
         );
         queue.add(edge.toStopId);
       }
@@ -848,10 +907,10 @@ class TransitRepository {
         departureTime: GtfsService.formatSecondsAsClock(departure),
         mode: mode,
         etaSummary:
-            'Arrives ${GtfsService.formatSecondsAsClock(arrival)} · ${(arrival - departure) ~/ 60} min',
+            'Arrives ${GtfsService.formatSecondsAsClock(arrival)} · ${RouteOption.formatMinutes(((arrival - departure) / 60).ceil())}',
         status: ServiceUrgency.onTime,
         arrivalTime: GtfsService.formatSecondsAsClock(arrival),
-        totalMinutes: (arrival - departure) ~/ 60,
+        totalMinutes: math.max(1, ((arrival - departure) / 60).ceil()),
         departureServiceSeconds: departure,
         arrivalServiceSeconds: arrival,
       ),
@@ -1003,9 +1062,9 @@ class TransitRepository {
       );
     }
     final remaining = Duration(seconds: upcoming.first - nowSeconds);
-    final urgency = remaining.inMinutes <= 5
+    final urgency = remaining <= const Duration(minutes: 5)
         ? ServiceUrgency.critical
-        : remaining.inMinutes <= 20
+        : remaining <= const Duration(minutes: 20)
             ? ServiceUrgency.closingSoon
             : ServiceUrgency.onTime;
     return stop.copyWith(
@@ -1151,6 +1210,7 @@ class _JourneyState {
   final int rides;
   final List<String> steps;
   final List<String> routes;
+  final List<RouteCheckpoint> checkpoints;
 
   const _JourneyState({
     required this.stopId,
@@ -1160,5 +1220,6 @@ class _JourneyState {
     required this.rides,
     required this.steps,
     required this.routes,
+    required this.checkpoints,
   });
 }

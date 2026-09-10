@@ -71,7 +71,7 @@ class RouteCard extends StatelessWidget {
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: .8)),
                           const Spacer(),
-                          Text('${route.totalMinutes} min',
+                          Text(route.durationLabel,
                               style: const TextStyle(
                                   fontSize: 16, fontWeight: FontWeight.w900)),
                         ],
@@ -112,8 +112,13 @@ class RouteCard extends StatelessWidget {
 
 class RouteDetailsSheet extends StatefulWidget {
   final RouteOption route;
+  final VoidCallback? onGo;
 
-  const RouteDetailsSheet({super.key, required this.route});
+  const RouteDetailsSheet({
+    super.key,
+    required this.route,
+    this.onGo,
+  });
 
   @override
   State<RouteDetailsSheet> createState() => _RouteDetailsSheetState();
@@ -138,25 +143,18 @@ class _RouteDetailsSheetState extends State<RouteDetailsSheet> {
   }
 
   double get _progress {
-    final route = widget.route;
-    if (route.departureServiceSeconds <= 0 ||
-        route.arrivalServiceSeconds <= route.departureServiceSeconds) {
-      return 0;
-    }
     final now = GtfsService.secondsIntoServiceDay(DateTime.now());
-    return ((now - route.departureServiceSeconds) /
-            (route.arrivalServiceSeconds - route.departureServiceSeconds))
-        .clamp(0.0, 1.0);
+    return widget.route.progressAt(now);
   }
 
   String get _progressLabel {
     final progress = _progress;
     if (progress <= 0) {
-      return 'Upcoming · departs ${widget.route.departureTime}';
+      return 'Upcoming · leave soon for ${widget.route.departureTime}';
     }
     if (progress >= 1) return 'Scheduled journey complete';
     final remaining = (widget.route.totalMinutes * (1 - progress)).ceil();
-    return 'In progress · about $remaining min remaining';
+    return 'Scheduled progress · about ${RouteOption.formatMinutes(remaining)} remaining';
   }
 
   @override
@@ -228,7 +226,7 @@ class _RouteDetailsSheetState extends State<RouteDetailsSheet> {
                         ),
                         const SizedBox(height: 5),
                         Text(
-                          '${widget.route.totalMinutes} min total · '
+                          '${widget.route.durationLabel} total · '
                           '${widget.route.transferCount} transfer${widget.route.transferCount == 1 ? '' : 's'}',
                           style:
                               const TextStyle(color: AppColors.textSecondary),
@@ -245,9 +243,47 @@ class _RouteDetailsSheetState extends State<RouteDetailsSheet> {
                         Text(_progressLabel,
                             style: const TextStyle(
                                 fontSize: 12, color: AppColors.textSecondary)),
+                        if (widget.onGo != null) ...[
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: () {
+                                Navigator.pop(context);
+                                widget.onGo!();
+                              },
+                              icon: const Icon(Icons.navigation_rounded),
+                              label: const Text('Go · start journey'),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
+                  if (widget.route.checkpoints.isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    const Text('Journey checkpoints',
+                        style: TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 10),
+                    for (final entry
+                        in widget.route.checkpoints.asMap().entries)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: CircleAvatar(
+                          radius: 15,
+                          backgroundColor: AppColors.gold,
+                          child: Text('${entry.key + 1}',
+                              style: const TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w900)),
+                        ),
+                        title: Text(entry.value.name),
+                        subtitle: Text(entry.value.instruction),
+                      ),
+                  ],
                   const SizedBox(height: 20),
                   const Text('How to get there',
                       style:

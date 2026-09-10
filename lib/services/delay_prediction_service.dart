@@ -183,7 +183,7 @@ class DelayPredictionService {
       weatherSummary: weather.summary,
       serviceSummary: routes.isEmpty
           ? 'No route found'
-          : '${routes.first.totalMinutes} min · ${routes.first.transferCount} transfer${routes.first.transferCount == 1 ? '' : 's'}',
+          : '${routes.first.durationLabel} · ${routes.first.transferCount} transfer${routes.first.transferCount == 1 ? '' : 's'}',
       estimatedArrival: routes.isEmpty
           ? 'Unavailable'
           : (routes.first.arrivalTime.isNotEmpty

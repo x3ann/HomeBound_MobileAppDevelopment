@@ -21,6 +21,7 @@ class Stop {
   final String routeLabel;
   final bool hasDepartureData;
   final bool isOperating;
+  final bool isLiveEstimate;
 
   const Stop({
     required this.name,
@@ -36,6 +37,7 @@ class Stop {
     this.routeLabel = '',
     this.hasDepartureData = true,
     this.isOperating = true,
+    this.isLiveEstimate = false,
   });
 
   Stop copyWith({
@@ -52,6 +54,7 @@ class Stop {
     String? routeLabel,
     bool? hasDepartureData,
     bool? isOperating,
+    bool? isLiveEstimate,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -67,6 +70,7 @@ class Stop {
       routeLabel: routeLabel ?? this.routeLabel,
       hasDepartureData: hasDepartureData ?? this.hasDepartureData,
       isOperating: isOperating ?? this.isOperating,
+      isLiveEstimate: isLiveEstimate ?? this.isLiveEstimate,
     );
   }
 

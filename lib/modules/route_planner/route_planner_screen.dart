@@ -19,11 +19,14 @@ import 'widgets/route_card.dart';
 class RoutePlannerScreen extends StatefulWidget {
   final Stop? initialOrigin;
   final Stop? initialDestination;
+  final void Function(Stop origin, Stop destination, RouteOption route)?
+      onStartJourney;
 
   const RoutePlannerScreen({
     super.key,
     this.initialOrigin,
     this.initialDestination,
+    this.onStartJourney,
   });
 
   @override
@@ -86,7 +89,12 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
             hint: 'Current location or origin stop',
             controller: _originController,
             onChanged: (value) {
-              _selectedOrigin = null;
+              setState(() {
+                _selectedOrigin = null;
+                _routes = const [];
+                _searched = false;
+                _validationMessage = null;
+              });
               _findOriginSuggestions(value);
             }),
         if (_originSuggestions.isNotEmpty)
@@ -96,6 +104,8 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               _originController.text = stop.name;
               _selectedOrigin = stop;
               _originSuggestions = const [];
+              _routes = const [];
+              _searched = false;
             }),
           ),
         const SizedBox(height: 6),
@@ -141,7 +151,12 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
             hint: 'Destination',
             controller: _destinationController,
             onChanged: (value) {
-              _selectedDestination = null;
+              setState(() {
+                _selectedDestination = null;
+                _routes = const [];
+                _searched = false;
+                _validationMessage = null;
+              });
               _findDestinationSuggestions(value);
             }),
         if (_destinationSuggestions.isNotEmpty)
@@ -151,6 +166,8 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
               _destinationController.text = stop.name;
               _selectedDestination = stop;
               _destinationSuggestions = const [];
+              _routes = const [];
+              _searched = false;
             }),
           ),
         const SizedBox(height: 10),
@@ -197,6 +214,16 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
                 style: TextStyle(fontSize: 11, color: Color(0xFF9BA0C2)),
               ),
             ),
+          if (!_planning &&
+              _routes.isNotEmpty &&
+              !_routes.any((route) => route.mode.toLowerCase().contains('bus')))
+            const Padding(
+              padding: EdgeInsets.only(bottom: 10),
+              child: Text(
+                'No verified scheduled bus journey was found within 3 km of both endpoints. Only valid rail options are shown.',
+                style: TextStyle(fontSize: 11, color: AppColors.warning),
+              ),
+            ),
           if (!_planning && _routes.isEmpty)
             const Text(
                 'No scheduled rail or direct bus journey was found for these locations today.',
@@ -209,7 +236,18 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
                     context: context,
                     isScrollControlled: true,
                     backgroundColor: Colors.transparent,
-                    builder: (_) => RouteDetailsSheet(route: entry.value),
+                    builder: (_) => RouteDetailsSheet(
+                      route: entry.value,
+                      onGo: widget.onStartJourney == null ||
+                              _selectedOrigin == null ||
+                              _selectedDestination == null
+                          ? null
+                          : () => widget.onStartJourney!(
+                                _selectedOrigin!,
+                                _selectedDestination!,
+                                entry.value,
+                              ),
+                    ),
                   ),
                 )),
         ],
@@ -253,6 +291,8 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
       );
       _selectedOrigin = _currentLocation;
       _originController.text = _currentLocation!.name;
+      _routes = const [];
+      _searched = false;
     } else {
       _validationMessage = result.status == LocationStatus.disabled
           ? 'Turn on Location Services, or type your origin manually.'
@@ -298,7 +338,13 @@ class _RoutePlannerScreenState extends State<RoutePlannerScreen> {
       }
       final routes = await TransitRepository.instance
           .planRouteBetweenStops(originStop, destinationStop);
-      if (mounted) setState(() => _routes = routes);
+      if (mounted) {
+        setState(() {
+          _selectedOrigin = originStop;
+          _selectedDestination = destinationStop;
+          _routes = routes;
+        });
+      }
     } catch (_) {
       if (mounted) {
         setState(() => _validationMessage =

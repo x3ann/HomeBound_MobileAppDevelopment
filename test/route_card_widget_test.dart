@@ -24,6 +24,7 @@ void main() {
 
   testWidgets('route card opens detailed timeline and progress tracker',
       (tester) async {
+    var started = false;
     await tester.pumpWidget(MaterialApp(
       theme: AppTheme.dark,
       home: Scaffold(
@@ -34,7 +35,10 @@ void main() {
             onTap: () => showModalBottomSheet<void>(
               context: context,
               isScrollControlled: true,
-              builder: (_) => const RouteDetailsSheet(route: route),
+              builder: (_) => RouteDetailsSheet(
+                route: route,
+                onGo: () => started = true,
+              ),
             ),
           );
         }),
@@ -47,6 +51,10 @@ void main() {
     expect(find.text('Journey details'), findsOneWidget);
     expect(find.text('How to get there'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(find.text('Go · start journey'), findsOneWidget);
+    await tester.tap(find.text('Go · start journey'));
+    await tester.pumpAndSettle();
+    expect(started, isTrue);
     expect(tester.takeException(), isNull);
   });
 }

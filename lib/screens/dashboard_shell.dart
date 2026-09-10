@@ -7,6 +7,8 @@ import '../modules/live_map/live_map_screen.dart';
 import '../modules/route_planner/route_planner_screen.dart';
 import '../modules/ai_delay_prediction/ai_delay_prediction_screen.dart';
 import '../modules/sos_panic/sos_panic_screen.dart';
+import '../shared/models/planned_journey.dart';
+import '../shared/models/route_model.dart';
 import '../shared/models/stop.dart';
 
 enum DashboardPage { liveMap, routePlanner }
@@ -28,6 +30,7 @@ class _DashboardShellState extends State<DashboardShell> {
   int _plannerRequest = 0;
   Stop? _plannerOrigin;
   Stop? _plannerDestination;
+  PlannedJourney? _mapJourney;
 
   void _goToTab(int i) {
     setState(() {
@@ -38,6 +41,20 @@ class _DashboardShellState extends State<DashboardShell> {
   void _openBusRoute(String route) {
     setState(() {
       _mapQuery = route;
+      _mapJourney = null;
+      _mapRequest++;
+      _index = 1;
+    });
+  }
+
+  void _startJourney(Stop origin, Stop destination, RouteOption route) {
+    setState(() {
+      _mapQuery = null;
+      _mapJourney = PlannedJourney(
+        origin: origin,
+        destination: destination,
+        route: route,
+      );
       _mapRequest++;
       _index = 1;
     });
@@ -68,11 +85,13 @@ class _DashboardShellState extends State<DashboardShell> {
         // Flutter from reusing the wrong element during a tab hand-off.
         key: dashboardPageKey(DashboardPage.liveMap, _mapRequest),
         initialQuery: _mapQuery,
+        initialJourney: _mapJourney,
       ),
       RoutePlannerScreen(
         key: dashboardPageKey(DashboardPage.routePlanner, _plannerRequest),
         initialOrigin: _plannerOrigin,
         initialDestination: _plannerDestination,
+        onStartJourney: _startJourney,
       ),
       AiDelayPredictionScreen(onGoNow: _openPlannedJourney),
       const SosPanicScreen(),

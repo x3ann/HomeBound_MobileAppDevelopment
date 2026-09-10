@@ -120,7 +120,9 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
   }
 
   void _startCountdown() {
-    _timer?.cancel();
+    // Location and bus data refresh independently. Do not restart the
+    // one-second clock when those background refreshes finish.
+    if (_timer?.isActive ?? false) return;
 
     _timer = Timer.periodic(
       const Duration(seconds: 1),
@@ -130,15 +132,9 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
         if (_remaining.inSeconds > 0) {
           setState(() {
             _remaining -= const Duration(seconds: 1);
-            _stops = _stops
-                .map((stop) => stop.hasDepartureData &&
-                        stop.isOperating &&
-                        stop.timeToDeparture > Duration.zero
-                    ? stop.copyWith(
-                        timeToDeparture:
-                            stop.timeToDeparture - const Duration(seconds: 1))
-                    : stop)
-                .toList();
+            _railStops = _tickCountdowns(_railStops);
+            _busStops = _tickCountdowns(_busStops);
+            _stops = _tickCountdowns(_stops);
           });
         } else {
           _timer?.cancel();
@@ -148,25 +144,44 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
     );
   }
 
+  List<Stop> _tickCountdowns(List<Stop> stops) => stops
+      .map((stop) => stop.hasDepartureData &&
+              stop.isOperating &&
+              stop.timeToDeparture > Duration.zero
+          ? stop.copyWith(
+              timeToDeparture:
+                  stop.timeToDeparture - const Duration(seconds: 1),
+            )
+          : stop)
+      .toList();
+
   Future<void> _refreshExpiredSchedule() async {
     if (_refreshingExpired) return;
     _refreshingExpired = true;
-    BusArrivalService.instance.clearCache();
-    final result = await TransitRepository.instance.getNearbyStops(
-      forceRefresh: true,
-    );
-    if (!mounted) return;
-    setState(() {
-      _railStops = result.stops;
-      _combineNearbyStops();
-      _source = result.source;
-      _remaining =
-          _stops.isEmpty ? Duration.zero : _featuredStop.timeToDeparture;
-    });
-    _refreshingExpired = false;
-    if (_stops.isNotEmpty) {
+    try {
+      BusArrivalService.instance.clearCache();
+      final result = await TransitRepository.instance.getNearbyStops(
+        forceRefresh: true,
+      );
+      if (!mounted) return;
+      final location = _userLocation;
+      final refreshedRailStops = location == null
+          ? result.stops
+          : TransitRepository.instance.sortByDistance(
+              result.stops,
+              location,
+            );
+      setState(() {
+        _railStops = refreshedRailStops;
+        _combineNearbyStops();
+        _source = result.source;
+        _remaining =
+            _stops.isEmpty ? Duration.zero : _featuredStop.timeToDeparture;
+      });
       if (_stops.isNotEmpty && _canCountdown) _startCountdown();
-      await _useCurrentLocation();
+      if (location != null) await _loadNearbyBuses(location);
+    } finally {
+      _refreshingExpired = false;
     }
   }
 
@@ -245,18 +260,33 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
     try {
       for (final category in categories) {
         try {
-          busStops.addAll(await BusArrivalService.instance.nearbyStops(
+          final categoryStops = await BusArrivalService.instance.nearbyStops(
             userLocation: location,
             radiusMeters: 2000,
             category: category,
-          ));
-          for (final stop in busStops.where((stop) =>
+          );
+          busStops.addAll(categoryStops);
+          for (final stop in categoryStops.where((stop) =>
               stop.routeLabel.isNotEmpty && stop.distanceMeters != null)) {
             for (final label in stop.routeLabel.split(' · ')) {
               final previous = nearbyRoutes[label];
               if (previous == null || stop.distanceMeters! < previous) {
                 nearbyRoutes[label] = stop.distanceMeters!;
               }
+            }
+          }
+          final scheduled =
+              await BusArrivalService.instance.nearbyScheduledArrivals(
+            userLocation: location,
+            radiusMeters: 2000,
+            category: category,
+          );
+          for (final arrival in scheduled) {
+            final key = _routeKey(arrival.routeLabel);
+            final current = routeEtas[key];
+            if (current == null ||
+                (!current.stop.isLiveEstimate && arrival.eta < current.eta)) {
+              routeEtas[key] = arrival;
             }
           }
         } catch (_) {
@@ -287,7 +317,9 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
           for (final arrival in arrivals) {
             final key = _routeKey(arrival.routeLabel);
             final current = routeEtas[key];
-            if (current == null || arrival.eta < current.eta) {
+            if (current == null ||
+                !current.stop.isLiveEstimate ||
+                arrival.eta < current.eta) {
               routeEtas[key] = arrival;
             }
           }
@@ -297,7 +329,11 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
       }
       final unique = <String, Stop>{};
       for (final stop in liveStops) {
-        unique[_stopKey(stop)] = stop;
+        final key = _stopKey(stop);
+        final current = unique[key];
+        if (current == null || stop.timeToDeparture < current.timeToDeparture) {
+          unique[key] = stop;
+        }
       }
       for (final stop in busStops) {
         unique.putIfAbsent(_stopKey(stop), () => stop);
@@ -435,11 +471,11 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
 
   ServiceUrgency get _urgency {
     if (!_featuredStop.isOperating) return ServiceUrgency.critical;
-    if (_remaining.inMinutes <= 5) {
+    if (_remaining <= const Duration(minutes: 5)) {
       return ServiceUrgency.critical;
     }
 
-    if (_remaining.inMinutes <= 20) {
+    if (_remaining <= const Duration(minutes: 20)) {
       return ServiceUrgency.closingSoon;
     }
 
@@ -616,7 +652,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
                             const Icon(Icons.directions_bus_rounded, size: 16),
                         label: Text(_nearbyBusEtas[_routeKey(route)] == null
                             ? route
-                            : '$route · ${_nearbyBusEtas[_routeKey(route)]!.etaLabel}'),
+                            : '$route · ${_routeEtaLabel(_nearbyBusEtas[_routeKey(route)]!)}'),
                         tooltip: 'Show route $route on the live map',
                         onPressed: () => widget.onOpenBusRoute?.call(route),
                       ))
@@ -674,4 +710,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
       .split('—')
       .first
       .replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  String _routeEtaLabel(BusArrivalEstimate estimate) =>
+      '${estimate.etaLabel} ${estimate.stop.isLiveEstimate ? 'live' : 'scheduled'}';
 }
