@@ -197,19 +197,105 @@ class TransitRepository {
   Future<List<Stop>> searchStops(String query) async {
     if (_cachedStops == null) await getNearbyStops();
     await _ensureStationDirectory();
-    final needle = query.trim().toLowerCase();
+    final needle = normalizeSearchText(query);
     if (needle.isEmpty) return const [];
     final matches = _stationDirectory!
-        .where((stop) => stop.name.toLowerCase().contains(needle))
+        .where((stop) =>
+            normalizeSearchText(stop.name).contains(needle) ||
+            normalizeSearchText(stop.routeLabel).contains(needle))
         .toList();
     matches.sort((a, b) {
-      final aName = a.name.toLowerCase();
-      final bName = b.name.toLowerCase();
+      final aName = normalizeSearchText(a.name);
+      final bName = normalizeSearchText(b.name);
       final aRank = aName == needle ? 0 : (aName.startsWith(needle) ? 1 : 2);
       final bRank = bName == needle ? 0 : (bName.startsWith(needle) ? 1 : 2);
       return aRank != bRank ? aRank.compareTo(bRank) : aName.compareTo(bName);
     });
     return matches.take(6).toList();
+  }
+
+  static String normalizeSearchText(String value) => value
+      .toLowerCase()
+      .replaceAll(
+          RegExp(r'\b(mrt|lrt|monorail|brt|rail|station|stesen)\b'), ' ')
+      .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  /// Plans directly from selected suggestions so duplicate station names and
+  /// opposite-direction platforms are handled as one interchange.
+  Future<List<RouteOption>> planRouteBetweenStops(
+    Stop origin,
+    Stop destination,
+  ) async {
+    await _ensureStationDirectory();
+    await _ensureScheduleLoaded();
+    final directory = _stationDirectory ?? const <Stop>[];
+    if (directory.isEmpty) return const [];
+    final originMatches = _stationMatches(origin, directory);
+    final destinationMatches = _stationMatches(destination, directory);
+    if (originMatches.isEmpty || destinationMatches.isEmpty) return const [];
+
+    const distance = Distance();
+    final originStation = originMatches.first;
+    final destinationStation = destinationMatches.first;
+    final accessMeters = origin.gtfsStopId == null
+        ? distance.as(LengthUnit.Meter, origin.position, originStation.position)
+        : 0.0;
+    final egressMeters = destination.gtfsStopId == null
+        ? distance.as(
+            LengthUnit.Meter, destinationStation.position, destination.position)
+        : 0.0;
+    final accessSeconds = (accessMeters / 1.25).round();
+    final egressSeconds = (egressMeters / 1.25).round();
+    final nowSeconds = GtfsService.secondsIntoServiceDay(DateTime.now());
+    final routes = _scanNetworkRoutes(
+      originMatches.map((stop) => stop.gtfsStopId).whereType<String>().toSet(),
+      destinationMatches
+          .map((stop) => stop.gtfsStopId)
+          .whereType<String>()
+          .toSet(),
+      nowSeconds + accessSeconds,
+    );
+    return routes.map((route) {
+      final finalArrival = route.arrivalServiceSeconds + egressSeconds;
+      final totalMinutes = math.max(1, (finalArrival - nowSeconds) ~/ 60);
+      final steps = <String>[
+        if (accessSeconds > 0)
+          'Walk ${(accessSeconds / 60).ceil()} min to ${originStation.name}',
+        ...route.steps,
+        if (egressSeconds > 0)
+          'Walk ${(egressSeconds / 60).ceil()} min to ${destination.name}',
+      ];
+      return RouteOption(
+        departureTime: route.departureTime,
+        mode: route.mode,
+        etaSummary:
+            'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · $totalMinutes min total',
+        status: route.status,
+        steps: steps,
+        transferCount: route.transferCount,
+        arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
+        totalMinutes: totalMinutes,
+        isRecommended: route.isRecommended,
+        departureServiceSeconds: route.departureServiceSeconds,
+        arrivalServiceSeconds: finalArrival,
+      );
+    }).toList();
+  }
+
+  List<Stop> _stationMatches(Stop selected, List<Stop> directory) {
+    if (selected.gtfsStopId == null) {
+      return sortByDistance(directory, selected.position).take(4).toList();
+    }
+    final normalized = normalizeSearchText(selected.name);
+    final matches = directory
+        .where((stop) => normalizeSearchText(stop.name) == normalized)
+        .toList();
+    if (matches.isNotEmpty) return matches;
+    return directory
+        .where((stop) => stop.gtfsStopId == selected.gtfsStopId)
+        .toList();
   }
 
   /// Finds scheduled journeys with walking connections and up to three
@@ -228,7 +314,7 @@ class TransitRepository {
               double.parse(coordinateMatch.group(1)!),
               double.parse(coordinateMatch.group(2)!),
             ),
-          ).take(1).toList();
+          ).take(4).toList();
     final destinations = await searchStops(destinationName);
     if (origins.isEmpty || destinations.isEmpty) return const [];
     await _ensureScheduleLoaded();
@@ -267,7 +353,7 @@ class TransitRepository {
               double.parse(coordinateMatch.group(1)!),
               double.parse(coordinateMatch.group(2)!),
             ),
-          ).take(1).toList();
+          ).take(4).toList();
     final destinations = await searchStops(destinationName);
     if (origins.isEmpty || destinations.isEmpty) return const [];
     await _ensureScheduleLoaded();
@@ -771,7 +857,7 @@ class TransitRepository {
   Future<void> _ensureScheduleLoaded() async {
     final now = DateTime.now();
     final serviceDate = GtfsService.serviceDateFor(now);
-    final dateStamp = _dateStamp(serviceDate);
+    final dateStamp = GtfsService.dateStamp(serviceDate);
     if (_stopTimes != null &&
         _trips != null &&
         _calendar != null &&
@@ -795,8 +881,12 @@ class TransitRepository {
     _calendarDates = results[3] as List<GtfsCalendarDate>;
     _routes = results[4] as List<GtfsRoute>;
     _frequencies = results[5] as List<GtfsFrequency>;
-    _activeTripIds = _computeActiveTripIds(
-        _trips!, _calendar!, _calendarDates!, serviceDate);
+    _activeTripIds = GtfsService.activeTripIds(
+      trips: _trips!,
+      calendar: _calendar!,
+      calendarDates: _calendarDates!,
+      serviceDate: serviceDate,
+    );
     _activeDate = dateStamp;
   }
 
@@ -861,57 +951,6 @@ class TransitRepository {
         '${minutes.toString().padLeft(2, '0')}:'
         '${remainder.toString().padLeft(2, '0')}';
   }
-
-  Set<String> _computeActiveTripIds(
-    List<GtfsTrip> trips,
-    List<GtfsCalendarService> calendar,
-    List<GtfsCalendarDate> calendarDates,
-    DateTime today,
-  ) {
-    final todayStamp = _dateStamp(today);
-
-    bool runsToday(GtfsCalendarService service) {
-      final withinRange = (service.startDate.isEmpty ||
-              todayStamp.compareTo(service.startDate) >= 0) &&
-          (service.endDate.isEmpty ||
-              todayStamp.compareTo(service.endDate) <= 0);
-      if (!withinRange) return false;
-      switch (today.weekday) {
-        case DateTime.monday:
-          return service.monday;
-        case DateTime.tuesday:
-          return service.tuesday;
-        case DateTime.wednesday:
-          return service.wednesday;
-        case DateTime.thursday:
-          return service.thursday;
-        case DateTime.friday:
-          return service.friday;
-        case DateTime.saturday:
-          return service.saturday;
-        case DateTime.sunday:
-        default:
-          return service.sunday;
-      }
-    }
-
-    final activeServiceIds =
-        calendar.where(runsToday).map((s) => s.serviceId).toSet();
-    for (final exception in calendarDates.where((e) => e.date == todayStamp)) {
-      if (exception.exceptionType == 1) {
-        activeServiceIds.add(exception.serviceId);
-      } else {
-        activeServiceIds.remove(exception.serviceId);
-      }
-    }
-    return trips
-        .where((t) => activeServiceIds.contains(t.serviceId))
-        .map((t) => t.tripId)
-        .toSet();
-  }
-
-  String _dateStamp(DateTime date) =>
-      '${date.year.toString().padLeft(4, '0')}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
 }
 
 class _TransitConnection {

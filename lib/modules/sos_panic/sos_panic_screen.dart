@@ -29,6 +29,7 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
   bool _isSavingContact = false;
   String? _contactError;
   Timer? _safetyLocationTimer;
+  _EmergencyTarget _target = _EmergencyTarget.emergencyServices;
 
   @override
   void initState() {
@@ -109,15 +110,27 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
 
   Future<void> _activateSos() async {
     if (_isSosActive) return;
+    if (_target == _EmergencyTarget.savedContact &&
+        !EmergencyContactService.isValid(_contactController.text)) {
+      setState(() => _contactError = 'Enter a valid emergency contact first.');
+      _showMessage(
+          'Enter and save a valid emergency contact before using SOS.');
+      return;
+    }
     await HapticFeedback.heavyImpact();
     if (!mounted) return;
     setState(() => _isSosActive = true);
-    await _getCurrentLocation();
+    unawaited(_getCurrentLocation());
     _safetyLocationTimer?.cancel();
     _safetyLocationTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _getCurrentLocation(quiet: true),
     );
+    if (_target == _EmergencyTarget.emergencyServices) {
+      await _callEmergencyServices();
+    } else {
+      await _callSavedContact();
+    }
   }
 
   Future<void> _callEmergencyServices() async {
@@ -204,6 +217,12 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 30),
           children: [
             _statusCard(),
+            const SizedBox(height: 14),
+            _callTargetCard(),
+            if (_target == _EmergencyTarget.savedContact) ...[
+              const SizedBox(height: 14),
+              _contactCard(),
+            ],
             const SizedBox(height: 24),
             Center(child: _sosButton()),
             const SizedBox(height: 12),
@@ -220,11 +239,16 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
               ),
             ),
             const SizedBox(height: 24),
+            const SizedBox(height: 14),
             _locationCard(),
             const SizedBox(height: 14),
-            _contactCard(),
+            if (_target == _EmergencyTarget.emergencyServices) _contactCard(),
             const SizedBox(height: 14),
-            _actions(),
+            OutlinedButton.icon(
+              onPressed: _prepareEmergencyMessage,
+              icon: const Icon(Icons.sms_rounded),
+              label: const Text('Prepare Location Message'),
+            ),
             if (_isSosActive) ...[
               const SizedBox(height: 12),
               OutlinedButton.icon(
@@ -304,6 +328,43 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
               ),
             ),
           ),
+        ),
+      );
+
+  Widget _callTargetCard() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _CardTitle(
+                icon: Icons.phone_in_talk_rounded, text: 'Call when activated'),
+            const SizedBox(height: 12),
+            SegmentedButton<_EmergencyTarget>(
+              segments: const [
+                ButtonSegment(
+                  value: _EmergencyTarget.emergencyServices,
+                  icon: Icon(Icons.local_police_rounded),
+                  label: Text(_emergencyNumber),
+                ),
+                ButtonSegment(
+                  value: _EmergencyTarget.savedContact,
+                  icon: Icon(Icons.contact_phone_rounded),
+                  label: Text('Contact'),
+                ),
+              ],
+              selected: {_target},
+              onSelectionChanged: _isSosActive
+                  ? null
+                  : (selection) => setState(() => _target = selection.first),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _target == _EmergencyTarget.emergencyServices
+                  ? 'Holding SOS opens the $_emergencyNumber call screen immediately.'
+                  : 'Holding SOS opens your saved contact call screen immediately.',
+              style:
+                  const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+          ],
         ),
       );
 
@@ -394,28 +455,6 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
         ),
       );
 
-  Widget _actions() => Column(
-        children: [
-          ElevatedButton.icon(
-            onPressed: _callEmergencyServices,
-            icon: const Icon(Icons.phone_rounded),
-            label: const Text('Open Dialer ($_emergencyNumber)'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: _callSavedContact,
-            icon: const Icon(Icons.contact_phone_rounded),
-            label: const Text('Call Saved Emergency Contact'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: _prepareEmergencyMessage,
-            icon: const Icon(Icons.sms_rounded),
-            label: const Text('Prepare Location Message'),
-          ),
-        ],
-      );
-
   Widget _safetyNotice() => _card(
         color: AppColors.surfaceAlt,
         child: const Row(
@@ -425,7 +464,7 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
             SizedBox(width: 10),
             Expanded(
               child: Text(
-                'The app only opens your dialer or messaging app. Confirm the recipient and location, then place the call or send the message yourself.',
+                'For device safety, the system call screen opens immediately after a long press; confirm the call there. Location refreshes every 5 seconds while emergency mode is active.',
                 style: TextStyle(
                     color: AppColors.textSecondary, fontSize: 12, height: 1.45),
               ),
@@ -468,6 +507,8 @@ class _SosPanicScreenState extends State<SosPanicScreen> {
     return '$hour:$minute ${local.hour >= 12 ? 'PM' : 'AM'}';
   }
 }
+
+enum _EmergencyTarget { emergencyServices, savedContact }
 
 class _CardTitle extends StatelessWidget {
   final IconData icon;

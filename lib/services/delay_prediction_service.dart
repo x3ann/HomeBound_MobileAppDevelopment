@@ -20,7 +20,7 @@ class DelayPredictionService {
   }) async {
     final results = await Future.wait<Object?>([
       _repository.getNearbyStops(),
-      _repository.planRoute(origin.name, destination.name),
+      _repository.planRouteBetweenStops(origin, destination),
       _weatherService.currentAt(origin.position).catchError(
             (_) => const CurrentWeather(
               precipitationMm: 0,
@@ -52,7 +52,7 @@ class DelayPredictionService {
     required bool scheduleAvailable,
     required DateTime calculatedAt,
   }) {
-    var score = 8;
+    var score = 0;
     var delayMinutes = 0;
     final factors = <String>[];
 
@@ -61,6 +61,13 @@ class DelayPredictionService {
       factors.add('No usable scheduled route is currently available.');
     } else {
       factors.add('An official scheduled route is available.');
+      final transfers = routes.first.transferCount;
+      if (transfers > 0) {
+        score += transfers * 7;
+        delayMinutes += transfers * 2;
+        factors.add(
+            '$transfers transfer${transfers == 1 ? '' : 's'} adds connection risk.');
+      }
     }
 
     final waitMinutes = origin.timeToDeparture.inMinutes;
@@ -76,6 +83,7 @@ class DelayPredictionService {
       delayMinutes += 2;
       factors.add('The next scheduled departure is $waitMinutes minutes away.');
     } else {
+      score += (waitMinutes / 2).round().clamp(0, 10);
       factors.add('The next scheduled departure is due within 10 minutes.');
     }
 
@@ -127,6 +135,8 @@ class DelayPredictionService {
                   ? routes.first.arrivalTime
                   : '${routes.first.arrivalTime} + up to $delayMinutes min')
               : routes.first.etaSummary),
+      totalEstimatedMinutes:
+          routes.isEmpty ? 0 : routes.first.totalMinutes + delayMinutes,
       factors: factors,
       sourceSummary: weather.isLive
           ? 'Official GTFS schedule + current Open-Meteo weather'

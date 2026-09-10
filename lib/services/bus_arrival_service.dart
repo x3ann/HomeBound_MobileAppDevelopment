@@ -23,6 +23,8 @@ class BusArrivalService {
   }) async {
     final schedule = await _scheduleFor(category);
     const distance = Distance();
+    final now = DateTime.now();
+    final nowSeconds = GtfsService.secondsIntoServiceDay(now);
     final stops = schedule.stops.values
         .map((stop) {
           final position = LatLng(stop.lat, stop.lon);
@@ -30,18 +32,36 @@ class BusArrivalService {
           final labels =
               schedule.routeLabelsByStop[stop.stopId] ?? const <String>[];
           final routeLabel = labels.take(3).join(' · ');
+          final departures =
+              schedule.departuresByStop[stop.stopId] ?? const <int>[];
+          final upcoming = departures.where((value) => value > nowSeconds);
+          final next = upcoming.isEmpty ? null : upcoming.first;
+          final operating = departures.isNotEmpty &&
+              nowSeconds >= departures.first &&
+              nowSeconds < departures.last;
+          final remaining = next == null || !operating
+              ? Duration.zero
+              : Duration(seconds: next - nowSeconds);
           return Stop(
             name: stop.name,
             platform:
                 routeLabel.isEmpty ? 'Bus stop' : 'Bus stop · $routeLabel',
             position: position,
-            timeToDeparture: Duration.zero,
-            urgency: ServiceUrgency.onTime,
+            timeToDeparture: remaining,
+            urgency: !operating || remaining.inMinutes <= 5
+                ? ServiceUrgency.critical
+                : remaining.inMinutes <= 20
+                    ? ServiceUrgency.closingSoon
+                    : ServiceUrgency.onTime,
             gtfsStopId: stop.stopId,
             distanceMeters: meters,
             transportMode: 'Bus',
             routeLabel: routeLabel,
-            hasDepartureData: false,
+            lastService: departures.isEmpty
+                ? '—'
+                : GtfsService.formatSecondsAsClock(departures.last),
+            hasDepartureData: departures.isNotEmpty,
+            isOperating: operating,
           );
         })
         .where(
@@ -71,6 +91,17 @@ class BusArrivalService {
           GtfsService.gtfsTimeToSeconds(times[currentIndex].arrivalTime) ??
               GtfsService.gtfsTimeToSeconds(times[currentIndex].departureTime);
       if (currentSeconds == null) continue;
+      final currentGtfsStop = schedule.stops[times[currentIndex].stopId];
+      final approachSeconds = currentGtfsStop == null
+          ? 0
+          : (distance.as(
+                    LengthUnit.Meter,
+                    vehicle.position,
+                    LatLng(currentGtfsStop.lat, currentGtfsStop.lon),
+                  ) /
+                  ((vehicle.speedMps ?? 5.5).clamp(3.0, 22.0)))
+              .round()
+              .clamp(0, 1800);
       for (var index = currentIndex; index < times.length; index++) {
         final time = times[index];
         final gtfsStop = schedule.stops[time.stopId];
@@ -82,12 +113,13 @@ class BusArrivalService {
         final targetSeconds = GtfsService.gtfsTimeToSeconds(time.arrivalTime) ??
             GtfsService.gtfsTimeToSeconds(time.departureTime);
         if (targetSeconds == null) continue;
-        var etaSeconds = targetSeconds - currentSeconds;
+        var etaSeconds = targetSeconds - currentSeconds + approachSeconds;
         if (etaSeconds < 0) etaSeconds += 86400;
         if (index == currentIndex) {
           final meters =
               distance.as(LengthUnit.Meter, vehicle.position, stopPosition);
-          etaSeconds = (meters / (vehicle.speedMps ?? 5.5)).round();
+          etaSeconds =
+              (meters / ((vehicle.speedMps ?? 5.5).clamp(3.0, 22.0))).round();
         }
         final route = schedule.routes[trip.routeId];
         final routeLabel = route == null
@@ -169,6 +201,8 @@ class BusArrivalService {
       GtfsService.fetchRoutes(category: category),
       GtfsService.fetchTrips(category: category),
       GtfsService.fetchStopTimes(category: category),
+      GtfsService.fetchCalendar(category: category),
+      GtfsService.fetchCalendarDates(category: category),
     ]);
     final stopTimes = results[3] as List<GtfsStopTime>;
     final byTrip = <String, List<GtfsStopTime>>{};
@@ -179,6 +213,12 @@ class BusArrivalService {
       times.sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
     }
     final trips = results[2] as List<GtfsTrip>;
+    final activeTripIds = GtfsService.activeTripIds(
+      trips: trips,
+      calendar: results[4] as List<GtfsCalendarService>,
+      calendarDates: results[5] as List<GtfsCalendarDate>,
+      serviceDate: GtfsService.serviceDateFor(DateTime.now()),
+    );
     final routes = {
       for (final route in results[1] as List<GtfsRoute>) route.routeId: route
     };
@@ -186,6 +226,7 @@ class BusArrivalService {
       for (final trip in trips) trip.tripId: routes[trip.routeId],
     };
     final labelsByStop = <String, Set<String>>{};
+    final departuresByStop = <String, List<int>>{};
     for (final entry in byTrip.entries) {
       final route = routeByTrip[entry.key];
       if (route == null || route.displayName.isEmpty) continue;
@@ -193,7 +234,17 @@ class BusArrivalService {
         labelsByStop
             .putIfAbsent(time.stopId, () => <String>{})
             .add(route.displayName);
+        if (activeTripIds.contains(entry.key)) {
+          final seconds = GtfsService.gtfsTimeToSeconds(time.departureTime) ??
+              GtfsService.gtfsTimeToSeconds(time.arrivalTime);
+          if (seconds != null) {
+            departuresByStop.putIfAbsent(time.stopId, () => []).add(seconds);
+          }
+        }
       }
+    }
+    for (final departures in departuresByStop.values) {
+      departures.sort();
     }
     return _BusSchedule(
       stops: {
@@ -206,6 +257,7 @@ class BusArrivalService {
         for (final entry in labelsByStop.entries)
           entry.key: (entry.value.toList()..sort()),
       },
+      departuresByStop: departuresByStop,
     );
   }
 }
@@ -216,6 +268,7 @@ class _BusSchedule {
   final List<GtfsTrip> trips;
   final Map<String, List<GtfsStopTime>> timesByTrip;
   final Map<String, List<String>> routeLabelsByStop;
+  final Map<String, List<int>> departuresByStop;
 
   const _BusSchedule({
     required this.stops,
@@ -223,6 +276,7 @@ class _BusSchedule {
     required this.trips,
     required this.timesByTrip,
     required this.routeLabelsByStop,
+    required this.departuresByStop,
   });
 
   GtfsTrip? matchTrip(String realtimeTripId) {

@@ -6,6 +6,7 @@ class DelayPrediction {
   final String weatherSummary;
   final String serviceSummary;
   final String estimatedArrival;
+  final int totalEstimatedMinutes;
   final List<String> factors;
   final String sourceSummary;
   final DateTime calculatedAt;
@@ -18,6 +19,7 @@ class DelayPrediction {
     required this.weatherSummary,
     required this.serviceSummary,
     required this.estimatedArrival,
+    required this.totalEstimatedMinutes,
     required this.factors,
     required this.sourceSummary,
     required this.calculatedAt,
