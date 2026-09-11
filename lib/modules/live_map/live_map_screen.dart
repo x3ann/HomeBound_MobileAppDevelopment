@@ -64,6 +64,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   LatLng? _lastBusStopCenter;
   DateTime? _lastBusStopAttempt;
   Stop? _selectedStop;
+  final Map<String, String> _directionByStop = {};
   bool _selectedStopExpanded = false;
   String _query = '';
   String? _liveMessage;
@@ -115,14 +116,14 @@ class _LiveMapScreenState extends State<LiveMapScreen>
       var departureExpired = false;
       setState(() {
         _stops = _stops.map((stop) {
-          if (!stop.isOperating ||
-              !stop.hasDepartureData ||
-              stop.timeToDeparture <= Duration.zero) {
-            return stop;
+          final updated = _tickStop(stop);
+          if (stop.isOperating &&
+              stop.hasDepartureData &&
+              stop.timeToDeparture > Duration.zero &&
+              updated.timeToDeparture <= Duration.zero) {
+            departureExpired = true;
           }
-          final remaining = stop.timeToDeparture - const Duration(seconds: 1);
-          if (remaining <= Duration.zero) departureExpired = true;
-          return stop.copyWith(timeToDeparture: remaining);
+          return updated;
         }).toList();
       });
       if (departureExpired && !_scheduleRefreshPending) {
@@ -171,9 +172,10 @@ class _LiveMapScreenState extends State<LiveMapScreen>
     if (!mounted) return;
     final location = _userLocation;
     setState(() {
+      final selectedStops = _applyDirectionSelections(result.stops);
       _stops = location == null
-          ? result.stops
-          : TransitRepository.instance.sortByDistance(result.stops, location);
+          ? selectedStops
+          : TransitRepository.instance.sortByDistance(selectedStops, location);
       _source = result.source;
       _railShapes = shapes;
       _loading = false;
@@ -213,9 +215,10 @@ class _LiveMapScreenState extends State<LiveMapScreen>
     if (!mounted) return;
     final location = _userLocation;
     setState(() {
+      final selectedStops = _applyDirectionSelections(result.stops);
       final updatedStops = location == null
-          ? result.stops
-          : TransitRepository.instance.sortByDistance(result.stops, location);
+          ? selectedStops
+          : TransitRepository.instance.sortByDistance(selectedStops, location);
       _stops = updatedStops;
       final selected = _selectedStop;
       if (selected != null && selected.transportMode != 'Bus') {
@@ -237,6 +240,57 @@ class _LiveMapScreenState extends State<LiveMapScreen>
     if (mounted && location != null && _mapReady) {
       _mapController.move(location, 15);
     }
+  }
+
+  List<Stop> _applyDirectionSelections(List<Stop> stops) => stops.map((stop) {
+        final id = stop.gtfsStopId;
+        final key = id == null ? null : _directionByStop[id];
+        return key == null ? stop : stop.withDirection(key);
+      }).toList();
+
+  Stop _tickStop(Stop stop) {
+    if (stop.directionOptions.isNotEmpty) {
+      final options = stop.directionOptions
+          .map((option) =>
+              option.isOperating && option.timeToDeparture > Duration.zero
+                  ? TransitDirectionOption(
+                      key: option.key,
+                      destination: option.destination,
+                      routeLabel: option.routeLabel,
+                      transportMode: option.transportMode,
+                      timeToDeparture:
+                          option.timeToDeparture - const Duration(seconds: 1),
+                      urgency: option.urgency,
+                      lastService: option.lastService,
+                      hasDepartureData: option.hasDepartureData,
+                      isOperating: option.isOperating,
+                    )
+                  : option)
+          .toList();
+      final updated = stop.copyWith(directionOptions: options);
+      return updated
+          .withDirection(updated.selectedDirectionKey ?? options.first.key);
+    }
+    if (!stop.isOperating ||
+        !stop.hasDepartureData ||
+        stop.timeToDeparture <= Duration.zero) {
+      return stop;
+    }
+    return stop.copyWith(
+        timeToDeparture: stop.timeToDeparture - const Duration(seconds: 1));
+  }
+
+  void _selectStopDirection(Stop stop, String key) {
+    final id = stop.gtfsStopId;
+    if (id == null) return;
+    _directionByStop[id] = key;
+    final selected = stop.withDirection(key);
+    setState(() {
+      _stops = _stops
+          .map((item) => item.gtfsStopId == id ? item.withDirection(key) : item)
+          .toList();
+      _selectedStop = selected;
+    });
   }
 
   Future<void> _startLocationTracking() async {
@@ -885,6 +939,9 @@ class _LiveMapScreenState extends State<LiveMapScreen>
             ),
             onDirections:
                 _userLocation == null ? null : () => _openDirections(selected),
+            onDirectionChanged: selected.hasDirectionChoices
+                ? (key) => _selectStopDirection(selected, key)
+                : null,
           ),
           const SizedBox(height: 10),
         ],
@@ -1460,6 +1517,7 @@ class _SelectedStopCard extends StatelessWidget {
   final WalkingRoute? walkingRoute;
   final bool loadingRoute;
   final String? routeMessage;
+  final ValueChanged<String>? onDirectionChanged;
 
   const _SelectedStopCard({
     required this.stop,
@@ -1470,6 +1528,7 @@ class _SelectedStopCard extends StatelessWidget {
     required this.walkingRoute,
     required this.loadingRoute,
     required this.routeMessage,
+    required this.onDirectionChanged,
   });
 
   @override
@@ -1526,6 +1585,29 @@ class _SelectedStopCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (onDirectionChanged != null) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                key:
+                    ValueKey('${stop.gtfsStopId}|${stop.selectedDirectionKey}'),
+                initialValue: stop.selectedDirectionKey,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Platform direction',
+                  isDense: true,
+                ),
+                items: stop.directionOptions
+                    .map((option) => DropdownMenuItem(
+                          value: option.key,
+                          child: Text(option.label,
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ))
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) onDirectionChanged!(value);
+                },
+              ),
+            ],
             if (!expanded)
               Text(
                 '${stop.transportMode} · ${stop.serviceStatusLabel} · '

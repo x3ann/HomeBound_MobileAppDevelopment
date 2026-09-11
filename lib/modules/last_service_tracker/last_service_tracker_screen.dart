@@ -56,6 +56,7 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
   List<Stop> _busStops = const [];
   List<String> _nearbyBusRoutes = const [];
   Map<String, BusArrivalEstimate> _nearbyBusEtas = const {};
+  final Map<String, String> _directionByStop = {};
   LatLng? _userLocation;
 
   TransitDataSource _source = TransitDataSource.unavailable;
@@ -96,8 +97,8 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
     if (!mounted) return;
 
     setState(() {
-      _railStops = result.stops;
-      _stops = result.stops;
+      _railStops = _applyDirectionSelections(result.stops);
+      _stops = _railStops;
       _source = result.source;
       _remaining =
           _stops.isEmpty ? Duration.zero : _featuredStop.timeToDeparture;
@@ -144,16 +145,38 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
     );
   }
 
-  List<Stop> _tickCountdowns(List<Stop> stops) => stops
-      .map((stop) => stop.hasDepartureData &&
-              stop.isOperating &&
-              stop.timeToDeparture > Duration.zero
-          ? stop.copyWith(
-              timeToDeparture:
-                  stop.timeToDeparture - const Duration(seconds: 1),
-            )
-          : stop)
-      .toList();
+  List<Stop> _tickCountdowns(List<Stop> stops) => stops.map((stop) {
+        if (stop.directionOptions.isNotEmpty) {
+          final options = stop.directionOptions
+              .map((option) =>
+                  option.isOperating && option.timeToDeparture > Duration.zero
+                      ? TransitDirectionOption(
+                          key: option.key,
+                          destination: option.destination,
+                          routeLabel: option.routeLabel,
+                          transportMode: option.transportMode,
+                          timeToDeparture: option.timeToDeparture -
+                              const Duration(seconds: 1),
+                          urgency: option.urgency,
+                          lastService: option.lastService,
+                          hasDepartureData: option.hasDepartureData,
+                          isOperating: option.isOperating,
+                        )
+                      : option)
+              .toList();
+          final updated = stop.copyWith(directionOptions: options);
+          return updated
+              .withDirection(updated.selectedDirectionKey ?? options.first.key);
+        }
+        return stop.hasDepartureData &&
+                stop.isOperating &&
+                stop.timeToDeparture > Duration.zero
+            ? stop.copyWith(
+                timeToDeparture:
+                    stop.timeToDeparture - const Duration(seconds: 1),
+              )
+            : stop;
+      }).toList();
 
   Future<void> _refreshExpiredSchedule() async {
     if (_refreshingExpired) return;
@@ -165,10 +188,11 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
       );
       if (!mounted) return;
       final location = _userLocation;
+      final selectedStops = _applyDirectionSelections(result.stops);
       final refreshedRailStops = location == null
-          ? result.stops
+          ? selectedStops
           : TransitRepository.instance.sortByDistance(
-              result.stops,
+              selectedStops,
               location,
             );
       setState(() {
@@ -332,11 +356,14 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
         final key = _stopKey(stop);
         final current = unique[key];
         if (current == null || stop.timeToDeparture < current.timeToDeparture) {
-          unique[key] = stop;
+          unique[key] = _mergeDirectionOptions(stop, current);
+        } else {
+          unique[key] = _mergeDirectionOptions(current, stop);
         }
       }
       for (final stop in busStops) {
-        unique.putIfAbsent(_stopKey(stop), () => stop);
+        final key = _stopKey(stop);
+        unique[key] = _mergeDirectionOptions(unique[key] ?? stop, stop);
       }
       final sortedRoutes = nearbyRoutes.entries.toList()
         ..sort((a, b) => a.value.compareTo(b.value));
@@ -368,6 +395,44 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
         (a.distanceMeters ?? double.infinity)
             .compareTo(b.distanceMeters ?? double.infinity));
     _stops = combined.take(12).toList();
+  }
+
+  Stop _mergeDirectionOptions(Stop primary, Stop? other) {
+    if (other == null) return primary;
+    final options = <String, TransitDirectionOption>{
+      for (final option in primary.directionOptions) option.key: option,
+      for (final option in other.directionOptions) option.key: option,
+    }.values.toList()
+      ..sort((a, b) => a.timeToDeparture.compareTo(b.timeToDeparture));
+    if (options.isEmpty) return primary;
+    final selectedKey = primary.selectedDirectionKey ?? options.first.key;
+    return primary
+        .copyWith(
+          directionOptions: options,
+          selectedDirectionKey: selectedKey,
+        )
+        .withDirection(selectedKey);
+  }
+
+  List<Stop> _applyDirectionSelections(List<Stop> stops) => stops.map((stop) {
+        final id = stop.gtfsStopId;
+        final key = id == null ? null : _directionByStop[id];
+        return key == null ? stop : stop.withDirection(key);
+      }).toList();
+
+  void _selectFeaturedDirection(String key) {
+    final id = _featuredStop.gtfsStopId;
+    if (id == null) return;
+    _directionByStop[id] = key;
+    Stop update(Stop stop) =>
+        stop.gtfsStopId == id ? stop.withDirection(key) : stop;
+    setState(() {
+      _railStops = _railStops.map(update).toList();
+      _busStops = _busStops.map(update).toList();
+      _combineNearbyStops();
+      _remaining = _featuredStop.timeToDeparture;
+    });
+    if (_canCountdown) _startCountdown();
   }
 
   String _stopKey(Stop stop) =>
@@ -628,6 +693,29 @@ class _LastServiceTrackerScreenState extends State<LastServiceTrackerScreen>
             remaining: _remaining,
             urgency: _urgency,
           ),
+          if (_featuredStop.hasDirectionChoices) ...[
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              key: ValueKey(
+                  '${_featuredStop.gtfsStopId}|${_featuredStop.selectedDirectionKey}'),
+              initialValue: _featuredStop.selectedDirectionKey,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Platform direction',
+                prefixIcon: Icon(Icons.compare_arrows_rounded),
+              ),
+              items: _featuredStop.directionOptions
+                  .map((option) => DropdownMenuItem(
+                        value: option.key,
+                        child: Text(option.label,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ))
+                  .toList(),
+              onChanged: (value) {
+                if (value != null) _selectFeaturedDirection(value);
+              },
+            ),
+          ],
           const SizedBox(height: 16),
           LiveMapPreviewCard(
             nearbyCount: _stops.length,

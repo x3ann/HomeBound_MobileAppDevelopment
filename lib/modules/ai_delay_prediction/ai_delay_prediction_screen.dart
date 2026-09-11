@@ -318,6 +318,13 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
     required ValueChanged<Stop?> onChanged,
     required List<Stop> stations,
   }) {
+    final byKey = <String, Stop>{};
+    for (final station in stations) {
+      byKey.putIfAbsent(_stationKey(station), () => station);
+    }
+    final selectedKey = value == null ? null : _stationKey(value);
+    final validSelectedKey =
+        byKey.containsKey(selectedKey) ? selectedKey : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -328,23 +335,29 @@ class _AiDelayPredictionScreenState extends State<AiDelayPredictionScreen> {
                 fontWeight: FontWeight.w700,
                 letterSpacing: 1)),
         const SizedBox(height: 7),
-        DropdownButtonFormField<Stop>(
-          initialValue: value,
+        DropdownButtonFormField<String>(
+          key: ValueKey('$label|$validSelectedKey|${byKey.length}'),
+          initialValue: validSelectedKey,
           isExpanded: true,
           dropdownColor: AppColors.surface,
           hint: Text(hint),
-          items: stations
-              .map((station) => DropdownMenuItem(
-                    value: station,
-                    child: Text(station.name,
+          items: byKey.entries
+              .map((entry) => DropdownMenuItem(
+                    value: entry.key,
+                    child: Text(entry.value.name,
                         maxLines: 1, overflow: TextOverflow.ellipsis),
                   ))
               .toList(),
-          onChanged: onChanged,
+          onChanged: (key) => onChanged(key == null ? null : byKey[key]),
         ),
       ],
     );
   }
+
+  String _stationKey(Stop station) =>
+      '${station.transportMode}|${station.gtfsStopId ?? station.name}|'
+      '${station.routeLabel}|${station.position.latitude.toStringAsFixed(5)}|'
+      '${station.position.longitude.toStringAsFixed(5)}';
 
   Widget _resultCard(DelayPrediction result) {
     final color = _riskColor(result.riskScore);

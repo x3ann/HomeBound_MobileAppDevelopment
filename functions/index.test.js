@@ -30,6 +30,25 @@ test("creates a real segment observation when a vehicle advances", () => {
   assert.equal(samples[0].durationSeconds, 120);
   assert.equal(samples[0].precipitationMm, 2);
   assert.ok(samples[0].distanceKm > 0);
+  assert.ok(samples[0].secondsPerKm > 0);
+  assert.equal(samples[0].measurementMethod, "gps-transition");
+});
+
+test("creates a GPS observation when the feed omits stop sequence", () => {
+  const previous = [{
+    vehicleId: "bus-2", tripId: "trip-2", routeId: "route-2",
+    directionId: 1, sequence: 0, latitude: 3.14, longitude: 101.68,
+    speedMps: 0, timestampSeconds: 1000,
+    category: "rapid-bus-mrtfeeder",
+  }];
+  const current = [{...previous[0], longitude: 101.681,
+    timestampSeconds: 1060}];
+  const samples = transitionSamples(previous, current,
+      {precipitationMm: 0, weatherCode: 3, weatherAvailable: true});
+  assert.equal(samples.length, 1);
+  assert.equal(samples[0].fromSequence, null);
+  assert.equal(samples[0].toSequence, null);
+  assert.ok(samples[0].speedKmh > 3);
 });
 
 test("rejects GPS jumps and non-progressing vehicles", () => {

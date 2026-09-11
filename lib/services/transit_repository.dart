@@ -68,43 +68,18 @@ class TransitRepository {
       for (final stop in directory)
         if (stop.gtfsStopId != null) stop.gtfsStopId!: stop,
     };
-    final routeByTrip = <String, GtfsRoute>{};
-    final routesById = {
-      for (final route in _routes ?? const <GtfsRoute>[]) route.routeId: route,
-    };
-    for (final trip in _trips ?? const <GtfsTrip>[]) {
-      final route = routesById[trip.routeId];
-      if (route != null) routeByTrip[trip.tripId] = route;
-    }
-    final timesByStopAndRoute = <String, Map<String, List<int>>>{};
-    final routeDetails = <String, GtfsRoute>{};
-    for (final instance in _tripInstances().entries) {
-      final route = routeByTrip[instance.key.split('#').first];
-      if (route == null || route.displayName.isEmpty) continue;
-      routeDetails[route.displayName] = route;
-      for (final time in instance.value) {
-        final seconds = GtfsService.gtfsTimeToSeconds(time.departureTime) ??
-            GtfsService.gtfsTimeToSeconds(time.arrivalTime);
-        if (seconds == null) continue;
-        timesByStopAndRoute
-            .putIfAbsent(time.stopId, () => {})
-            .putIfAbsent(route.displayName, () => [])
-            .add(seconds);
-      }
-    }
+    final schedules = _directionSchedules();
+    final nowSeconds = GtfsService.secondsIntoServiceDay(DateTime.now());
     final result = <Stop>[];
-    for (final entry in timesByStopAndRoute.entries) {
+    for (final entry in schedules.entries) {
       final stop = stopById[entry.key];
       if (stop == null) continue;
-      for (final line in entry.value.entries) {
-        final route = routeDetails[line.key];
-        result.add(applyScheduleWindow(
-          stop: stop,
-          departureSeconds: line.value,
-          nowSeconds: GtfsService.secondsIntoServiceDay(DateTime.now()),
-          modeLabel: route?.modeLabel ?? 'Rail',
-          routeLabel: line.key,
-        ));
+      for (final schedule in entry.value.values) {
+        final option = _directionOption(stop, schedule, nowSeconds);
+        result.add(stop.copyWith(
+          directionOptions: [option],
+          selectedDirectionKey: option.key,
+        ).withDirection(option.key));
       }
     }
     result.sort((a, b) {
@@ -145,6 +120,8 @@ class TransitRepository {
               urgency: ServiceUrgency.onTime,
               gtfsStopId: stop.stopId))
           .toList();
+      // Direction labels need station names while the first schedule is built.
+      _stationDirectory = merged;
       merged = await _withRealSchedule(merged);
       _cachedStops = merged;
       _stationDirectory = merged;
@@ -351,57 +328,74 @@ class TransitRepository {
       final destinationMatches = _stationMatches(destination, directory);
       if (originMatches.isNotEmpty && destinationMatches.isNotEmpty) {
         const distance = Distance();
-        final originStation = originMatches.first;
-        final destinationStation = destinationMatches.first;
-        final accessMeters = origin.gtfsStopId == null
-            ? distance.as(
-                LengthUnit.Meter, origin.position, originStation.position)
-            : 0.0;
-        final egressMeters = destination.gtfsStopId == null
-            ? distance.as(LengthUnit.Meter, destinationStation.position,
-                destination.position)
-            : 0.0;
-        final accessSeconds = (accessMeters / 1.25).round();
-        final egressSeconds = (egressMeters / 1.25).round();
         final nowSeconds = GtfsService.secondsIntoServiceDay(DateTime.now());
-        final routes = _scanNetworkRoutes(
-          originMatches
-              .map((stop) => stop.gtfsStopId)
-              .whereType<String>()
-              .toSet(),
-          destinationMatches
-              .map((stop) => stop.gtfsStopId)
-              .whereType<String>()
-              .toSet(),
-          nowSeconds + accessSeconds,
-        );
-        railOptions.addAll(routes.map((route) {
-          final finalArrival = route.arrivalServiceSeconds + egressSeconds;
-          final totalMinutes =
-              math.max(1, ((finalArrival - nowSeconds) / 60).ceil());
-          return RouteOption(
-            departureTime: route.departureTime,
-            mode: route.mode,
-            etaSummary:
-                'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
-            status: route.status,
-            steps: [
-              if (accessSeconds > 0)
-                'Leave now and walk ${(accessSeconds / 60).ceil()} min (${accessMeters.round()} m) to ${originStation.name}',
-              ...route.steps,
-              if (egressSeconds > 0)
-                'Exit the station and walk ${(egressSeconds / 60).ceil()} min (${egressMeters.round()} m) to ${destination.name}',
-              'Arrive at ${destination.name} around ${GtfsService.formatSecondsAsClock(finalArrival)}',
-            ],
-            checkpoints: route.checkpoints,
-            transferCount: route.transferCount,
-            arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
-            totalMinutes: totalMinutes,
-            isRecommended: route.isRecommended,
-            departureServiceSeconds: route.departureServiceSeconds,
-            arrivalServiceSeconds: finalArrival,
+        final destinationById = {
+          for (final stop in destinationMatches)
+            if (stop.gtfsStopId != null) stop.gtfsStopId!: stop,
+        };
+        final destinationWalkSeconds = {
+          for (final entry in destinationById.entries)
+            entry.key: destination.gtfsStopId == null
+                ? (distance.as(LengthUnit.Meter, entry.value.position,
+                            destination.position) /
+                        1.25)
+                    .round()
+                : 0,
+        };
+        // Each possible boarding station has a different access walk. Search
+        // it independently, then rank all results by the complete door-to-door
+        // duration. Destination choice includes the walk from that exact stop.
+        for (final originStation in originMatches) {
+          final originId = originStation.gtfsStopId;
+          if (originId == null) continue;
+          final accessMeters = origin.gtfsStopId == null
+              ? distance.as(
+                  LengthUnit.Meter, origin.position, originStation.position)
+              : 0.0;
+          final accessSeconds = (accessMeters / 1.25).round();
+          final routes = _scanNetworkRoutes(
+            {originId},
+            destinationById.keys.toSet(),
+            nowSeconds + accessSeconds,
+            destinationWalkSeconds: destinationWalkSeconds,
           );
-        }));
+          railOptions.addAll(routes.map((route) {
+            final destinationStation =
+                destinationById[route.destinationStopId] ??
+                    destinationMatches.first;
+            final egressMeters = destination.gtfsStopId == null
+                ? distance.as(LengthUnit.Meter, destinationStation.position,
+                    destination.position)
+                : 0.0;
+            final egressSeconds = (egressMeters / 1.25).round();
+            final finalArrival = route.arrivalServiceSeconds + egressSeconds;
+            final totalMinutes =
+                math.max(1, ((finalArrival - nowSeconds) / 60).ceil());
+            return RouteOption(
+              departureTime: route.departureTime,
+              mode: route.mode,
+              etaSummary:
+                  'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
+              status: route.status,
+              steps: [
+                if (accessSeconds > 0)
+                  'Leave now and walk ${(accessSeconds / 60).ceil()} min (${accessMeters.round()} m) to ${originStation.name}',
+                ...route.steps,
+                if (egressSeconds > 0)
+                  'Exit the station and walk ${(egressSeconds / 60).ceil()} min (${egressMeters.round()} m) to ${destination.name}',
+                'Arrive at ${destination.name} around ${GtfsService.formatSecondsAsClock(finalArrival)}',
+              ],
+              checkpoints: route.checkpoints,
+              transferCount: route.transferCount,
+              arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
+              totalMinutes: totalMinutes,
+              isRecommended: route.isRecommended,
+              departureServiceSeconds: route.departureServiceSeconds,
+              arrivalServiceSeconds: finalArrival,
+              destinationStopId: route.destinationStopId,
+            );
+          }));
+        }
       }
     } catch (_) {
       // Bus planning remains useful when the rail schedule is unavailable.
@@ -657,7 +651,8 @@ class TransitRepository {
   }
 
   List<RouteOption> _scanNetworkRoutes(
-      Set<String> originIds, Set<String> destinationIds, int nowSeconds) {
+      Set<String> originIds, Set<String> destinationIds, int nowSeconds,
+      {Map<String, int> destinationWalkSeconds = const {}}) {
     if (originIds.isEmpty || destinationIds.isEmpty) return const [];
     final stationById = {
       for (final stop in _stationDirectory ?? const <Stop>[])
@@ -675,7 +670,11 @@ class TransitRepository {
     for (final entry in _tripInstances().entries) {
       final originalTripId = entry.key.split('#').first;
       final routeLabel = routeByTrip[originalTripId] ?? 'Rapid Rail';
-      final times = entry.value;
+      final times = [...entry.value]
+        ..sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
+      if (times.isEmpty) continue;
+      final destination =
+          stationById[times.last.stopId]?.name ?? times.last.stopId;
       for (var index = 0; index + 1 < times.length; index++) {
         final departure =
             GtfsService.gtfsTimeToSeconds(times[index].departureTime);
@@ -691,6 +690,7 @@ class TransitRepository {
           arrival: arrival,
           tripInstanceId: entry.key,
           routeLabel: routeLabel,
+          destination: destination,
         ));
       }
     }
@@ -735,13 +735,15 @@ class TransitRepository {
                 ...state.steps,
                 if (state.tripInstanceId != null)
                   'Change service at $fromName · allow at least 1 min',
-                'Board ${connection.routeLabel} at $fromName at ${GtfsService.formatSecondsAsClock(connection.departure)}',
+                'Board ${connection.routeLabel} toward ${connection.destination} at $fromName at ${GtfsService.formatSecondsAsClock(connection.departure)}',
               ];
+        final directionalRoute =
+            '${connection.routeLabel} toward ${connection.destination}';
         final routes = continuing ||
                 (state.routes.isNotEmpty &&
-                    state.routes.last == connection.routeLabel)
+                    state.routes.last == directionalRoute)
             ? state.routes
-            : [...state.routes, connection.routeLabel];
+            : [...state.routes, directionalRoute];
         final checkpoints = continuing || fromStop == null
             ? state.checkpoints
             : [
@@ -750,8 +752,8 @@ class TransitRepository {
                   name: fromName,
                   position: fromStop.position,
                   instruction: state.tripInstanceId == null
-                      ? 'Board ${connection.routeLabel}'
-                      : 'Change to ${connection.routeLabel}',
+                      ? 'Board ${connection.routeLabel} toward ${connection.destination}'
+                      : 'Change to ${connection.routeLabel} toward ${connection.destination}',
                   serviceSeconds: connection.departure,
                 ),
               ];
@@ -779,7 +781,8 @@ class TransitRepository {
           .whereType<_JourneyState>()
           .where((state) => state.departure >= 0)
           .toList()
-        ..sort((a, b) => a.time.compareTo(b.time));
+        ..sort((a, b) => (a.time + (destinationWalkSeconds[a.stopId] ?? 0))
+            .compareTo(b.time + (destinationWalkSeconds[b.stopId] ?? 0)));
       if (destinations.isEmpty) continue;
       final result = destinations.first;
       final destinationName = stationById[result.stopId]?.name ?? result.stopId;
@@ -813,6 +816,7 @@ class TransitRepository {
             math.max(1, ((result.time - result.departure) / 60).ceil()),
         departureServiceSeconds: result.departure,
         arrivalServiceSeconds: result.time,
+        destinationStopId: result.stopId,
       ));
     }
     final unique = <String, RouteOption>{};
@@ -971,60 +975,101 @@ class TransitRepository {
     final now = DateTime.now();
     final nowSeconds = GtfsService.secondsIntoServiceDay(now);
 
-    final routesById = {
-      for (final route in _routes ?? const <GtfsRoute>[]) route.routeId: route,
-    };
-    final routeByTrip = {
-      for (final trip in _trips ?? const <GtfsTrip>[])
-        trip.tripId: routesById[trip.routeId],
-    };
-    final timesByStop = <String, List<int>>{};
-    final modesByStop = <String, Set<String>>{};
-    final labelsByStop = <String, Set<String>>{};
-    for (final entry in _tripInstances().entries) {
-      final route = routeByTrip[entry.key.split('#').first];
-      for (final st in entry.value) {
-        final seconds = GtfsService.gtfsTimeToSeconds(st.departureTime) ??
-            GtfsService.gtfsTimeToSeconds(st.arrivalTime);
-        if (seconds == null) continue;
-        timesByStop.putIfAbsent(st.stopId, () => []).add(seconds);
-        if (route != null) {
-          modesByStop.putIfAbsent(st.stopId, () => {}).add(route.modeLabel);
-          if (route.displayName.isNotEmpty) {
-            labelsByStop
-                .putIfAbsent(st.stopId, () => {})
-                .add(route.displayName);
-          }
-        }
-      }
-    }
+    final schedules = _directionSchedules();
 
     return stops.map((stop) {
       final gtfsId = stop.gtfsStopId;
       if (gtfsId == null) return stop;
-      final times = timesByStop[gtfsId];
-      final modes = (modesByStop[gtfsId] ?? {'Rail'}).toList()..sort();
-      final labels = (labelsByStop[gtfsId] ?? const <String>{}).toList()
-        ..sort();
-      final modeLabel = modes.join(' / ');
-      final routeLabel = labels.take(3).join(' · ');
-      if (times == null || times.isEmpty) {
+      final stationSchedules = schedules[gtfsId]?.values.toList() ?? const [];
+      if (stationSchedules.isEmpty) {
         return stop.copyWith(
-          platform: '$modeLabel station',
-          transportMode: modeLabel,
-          routeLabel: routeLabel,
+          platform: 'Rail station',
           hasDepartureData: false,
           isOperating: false,
         );
       }
-      return applyScheduleWindow(
-        stop: stop,
-        departureSeconds: times,
-        nowSeconds: nowSeconds,
-        modeLabel: modeLabel,
-        routeLabel: routeLabel,
-      );
+      final options = stationSchedules
+          .map((schedule) => _directionOption(stop, schedule, nowSeconds))
+          .toList()
+        ..sort((a, b) {
+          if (a.isOperating != b.isOperating) return a.isOperating ? -1 : 1;
+          return a.timeToDeparture.compareTo(b.timeToDeparture);
+        });
+      final selected = options.first;
+      return stop
+          .copyWith(
+            directionOptions: options,
+            selectedDirectionKey: selected.key,
+          )
+          .withDirection(selected.key);
     }).toList();
+  }
+
+  Map<String, Map<String, _DirectionSchedule>> _directionSchedules() {
+    final routesById = {
+      for (final route in _routes ?? const <GtfsRoute>[]) route.routeId: route,
+    };
+    final tripsById = {
+      for (final trip in _trips ?? const <GtfsTrip>[]) trip.tripId: trip,
+    };
+    final stopNames = {
+      for (final stop in _stationDirectory ?? const <Stop>[])
+        if (stop.gtfsStopId != null) stop.gtfsStopId!: stop.name,
+    };
+    final schedules = <String, Map<String, _DirectionSchedule>>{};
+    for (final instance in _tripInstances().entries) {
+      final tripId = instance.key.split('#').first;
+      final trip = tripsById[tripId];
+      final route = trip == null ? null : routesById[trip.routeId];
+      if (trip == null || route == null || instance.value.isEmpty) continue;
+      final times = [...instance.value]
+        ..sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
+      final terminalId = times.last.stopId;
+      final destination = stopNames[terminalId] ?? terminalId;
+      final key = '${trip.routeId}|${trip.directionId ?? 'x'}|$terminalId';
+      // The final row is an arrival at the terminal, not a departure toward it.
+      for (final time in times.take(times.length - 1)) {
+        final seconds = GtfsService.gtfsTimeToSeconds(time.departureTime) ??
+            GtfsService.gtfsTimeToSeconds(time.arrivalTime);
+        if (seconds == null) continue;
+        schedules
+            .putIfAbsent(time.stopId, () => {})
+            .putIfAbsent(
+              key,
+              () => _DirectionSchedule(
+                key: key,
+                destination: destination,
+                routeLabel: route.displayName,
+                transportMode: route.modeLabel,
+              ),
+            )
+            .departureSeconds
+            .add(seconds);
+      }
+    }
+    return schedules;
+  }
+
+  TransitDirectionOption _directionOption(
+      Stop stop, _DirectionSchedule schedule, int nowSeconds) {
+    final scheduled = applyScheduleWindow(
+      stop: stop,
+      departureSeconds: schedule.departureSeconds,
+      nowSeconds: nowSeconds,
+      modeLabel: schedule.transportMode,
+      routeLabel: schedule.routeLabel,
+    );
+    return TransitDirectionOption(
+      key: schedule.key,
+      destination: schedule.destination,
+      routeLabel: schedule.routeLabel,
+      transportMode: schedule.transportMode,
+      timeToDeparture: scheduled.timeToDeparture,
+      urgency: scheduled.urgency,
+      lastService: scheduled.lastService,
+      hasDepartureData: scheduled.hasDepartureData,
+      isOperating: scheduled.isOperating,
+    );
   }
 
   /// Applies a published first/last-service window to a stop. Kept public and
@@ -1185,6 +1230,7 @@ class _TransitConnection {
   final int arrival;
   final String tripInstanceId;
   final String routeLabel;
+  final String destination;
 
   const _TransitConnection({
     required this.fromStopId,
@@ -1193,6 +1239,22 @@ class _TransitConnection {
     required this.arrival,
     required this.tripInstanceId,
     required this.routeLabel,
+    required this.destination,
+  });
+}
+
+class _DirectionSchedule {
+  final String key;
+  final String destination;
+  final String routeLabel;
+  final String transportMode;
+  final List<int> departureSeconds = [];
+
+  _DirectionSchedule({
+    required this.key,
+    required this.destination,
+    required this.routeLabel,
+    required this.transportMode,
   });
 }
 

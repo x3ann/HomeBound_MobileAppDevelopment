@@ -123,6 +123,19 @@ class CountdownCard extends StatelessWidget {
                         fontSize: 18, color: AppColors.textSecondary)),
               ],
             ),
+          if (stop.isOperating &&
+              stop.hasDepartureData &&
+              remaining > Duration.zero) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Estimated arrival: ${_clockTime(DateTime.now().add(remaining))}',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppColors.gold,
+              ),
+            ),
+          ],
           const SizedBox(height: 4),
           Text(
             stop.transportMode == 'Bus'
@@ -148,5 +161,11 @@ class CountdownCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  String _clockTime(DateTime value) {
+    final hour = value.hour % 12 == 0 ? 12 : value.hour % 12;
+    final minute = value.minute.toString().padLeft(2, '0');
+    return '$hour:$minute ${value.hour >= 12 ? 'PM' : 'AM'}';
   }
 }
