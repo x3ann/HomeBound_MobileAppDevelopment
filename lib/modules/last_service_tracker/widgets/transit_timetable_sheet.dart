@@ -218,8 +218,8 @@ class _TimetableTile extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     stop.routeLabel.isEmpty
-                        ? stop.transportMode
-                        : '${stop.transportMode} · ${stop.routeLabel}',
+                        ? '${stop.transportMode}${stop.directionLabel.isEmpty ? '' : ' · ${stop.directionLabel}'}'
+                        : '${stop.transportMode} · ${stop.routeLabel}${stop.directionLabel.isEmpty ? '' : ' · ${stop.directionLabel}'}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(

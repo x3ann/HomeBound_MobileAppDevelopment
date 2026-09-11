@@ -113,23 +113,31 @@ function transitionSamples(previousVehicles, vehicles, weather) {
   for (const current of vehicles) {
     const previous = previousByVehicle.get(current.vehicleId);
     if (!previous || !current.tripId || current.tripId !== previous.tripId) continue;
+    if (!current.routeId || current.category !== previous.category) continue;
     const elapsedSeconds = current.timestampSeconds - previous.timestampSeconds;
-    const sequenceDelta = current.sequence - previous.sequence;
     if (elapsedSeconds < 20 || elapsedSeconds > 900) continue;
-    if (sequenceDelta < 1 || sequenceDelta > 5) continue;
     const distanceKm = haversineKm(previous, current);
-    if (distanceKm > 20) continue;
+    const observedSpeedKmh = distanceKm / (elapsedSeconds / 3600);
+    // The Prasarana feeds currently omit current_stop_sequence for many buses.
+    // Use measured GPS movement instead, while rejecting stationary GPS noise
+    // and physically implausible jumps.
+    if (distanceKm < 0.05 || distanceKm > 5) continue;
+    if (observedSpeedKmh < 3 || observedSpeedKmh > 110) continue;
+    const sequenceDelta = current.sequence - previous.sequence;
     samples.push({
       category: current.category,
       routeId: current.routeId,
       tripId: current.tripId,
       directionId: current.directionId,
-      fromSequence: previous.sequence,
-      toSequence: current.sequence,
-      sequenceDelta,
-      durationSeconds: elapsedSeconds / sequenceDelta,
-      distanceKm: distanceKm / sequenceDelta,
-      speedKmh: current.speedMps * 3.6,
+      fromSequence: sequenceDelta > 0 ? previous.sequence : null,
+      toSequence: sequenceDelta > 0 ? current.sequence : null,
+      sequenceDelta: sequenceDelta > 0 ? sequenceDelta : null,
+      durationSeconds: elapsedSeconds,
+      distanceKm,
+      secondsPerKm: elapsedSeconds / distanceKm,
+      speedKmh: observedSpeedKmh,
+      reportedSpeedKmh: current.speedMps * 3.6,
+      measurementMethod: "gps-transition",
       precipitationMm: weather.precipitationMm,
       weatherCode: weather.weatherCode,
       weatherAvailable: weather.weatherAvailable,
@@ -235,19 +243,24 @@ function prepareRows(documents) {
   const rawSplit = Math.floor(orderedDocuments.length * 0.8);
   const groups = new Map();
   for (const sample of orderedDocuments.slice(0, rawSplit)) {
-    const key = [sample.category, sample.routeId, sample.directionId,
-      sample.fromSequence, sample.toSequence].join("|");
+    const key = [sample.category, sample.routeId, sample.directionId].join("|");
+    const secondsPerKm = finiteNumber(sample.secondsPerKm, NaN);
+    if (!Number.isFinite(secondsPerKm) || secondsPerKm <= 0) continue;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(sample.durationSeconds);
+    groups.get(key).push(secondsPerKm);
   }
   return orderedDocuments.flatMap((sample) => {
-    const key = [sample.category, sample.routeId, sample.directionId,
-      sample.fromSequence, sample.toSequence].join("|");
+    const key = [sample.category, sample.routeId, sample.directionId].join("|");
     const durations = groups.get(key);
     if (!durations || durations.length < 5) return [];
-    const typical = median(durations);
+    const secondsPerKm = finiteNumber(sample.secondsPerKm, NaN);
+    if (!Number.isFinite(secondsPerKm) || secondsPerKm <= 0) return [];
+    const typicalSecondsPerKm = median(durations);
+    // Express congestion as extra minutes on a representative ten-minute bus
+    // segment. This creates a journey-scale label without inventing missing
+    // stop-sequence values.
     const excessMinutes = Math.max(-3, Math.min(15,
-        (sample.durationSeconds - typical) / 60));
+        10 * (secondsPerKm / typicalSecondsPerKm - 1)));
     return [{x: featureVector(sample), y: excessMinutes,
       observedAt: sample.observedAt.toMillis()}];
   }).sort((a, b) => a.observedAt - b.observedAt);

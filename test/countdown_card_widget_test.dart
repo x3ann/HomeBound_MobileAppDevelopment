@@ -1,11 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homebound/modules/last_service_tracker/widgets/countdown_card.dart';
+import 'package:homebound/modules/last_service_tracker/widgets/transit_timetable_sheet.dart';
 import 'package:homebound/shared/models/stop.dart';
 import 'package:homebound/shared/theme/app_theme.dart';
 import 'package:latlong2/latlong.dart';
 
 void main() {
+  testWidgets('timetable identifies the platform destination', (tester) async {
+    const direction = TransitDirectionOption(
+      key: 'PYL|0|PY41',
+      destination: 'PUTRAJAYA SENTRAL',
+      routeLabel: 'PYL — MRT Putrajaya Line',
+      transportMode: 'MRT',
+      timeToDeparture: Duration(minutes: 2),
+      urgency: ServiceUrgency.critical,
+      lastService: '12:44 AM',
+      hasDepartureData: true,
+      isOperating: true,
+    );
+    const stop = Stop(
+      name: 'KEPONG BARU',
+      platform: 'MRT station · Toward PUTRAJAYA SENTRAL',
+      position: LatLng(3.211663, 101.648193),
+      timeToDeparture: Duration(minutes: 2),
+      urgency: ServiceUrgency.critical,
+      routeLabel: 'PYL — MRT Putrajaya Line',
+      transportMode: 'MRT',
+      lastService: '12:44 AM',
+      selectedDirectionKey: 'PYL|0|PY41',
+      directionOptions: [direction],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.dark,
+      home: const Scaffold(body: TransitTimetableSheet(stops: [stop])),
+    ));
+
+    expect(find.textContaining('Toward PUTRAJAYA SENTRAL'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('long bus details stay inside the countdown card',
       (tester) async {
     tester.view.physicalSize = const Size(412, 915);
@@ -42,6 +77,7 @@ void main() {
 
     expect(find.text('PJ532 ONE UTAMA LDP WITH AN EXTRA LONG STOP NAME'),
         findsOneWidget);
+    expect(find.textContaining('Estimated arrival:'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

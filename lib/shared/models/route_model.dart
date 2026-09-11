@@ -29,6 +29,7 @@ class RouteOption {
   final int departureServiceSeconds;
   final int arrivalServiceSeconds;
   final List<RouteCheckpoint> checkpoints;
+  final String? destinationStopId;
 
   const RouteOption({
     required this.departureTime,
@@ -43,6 +44,7 @@ class RouteOption {
     this.departureServiceSeconds = 0,
     this.arrivalServiceSeconds = 0,
     this.checkpoints = const [],
+    this.destinationStopId,
   });
 
   RouteOption copyWith({bool? isRecommended}) => RouteOption(
@@ -58,6 +60,7 @@ class RouteOption {
         departureServiceSeconds: departureServiceSeconds,
         arrivalServiceSeconds: arrivalServiceSeconds,
         checkpoints: checkpoints,
+        destinationStopId: destinationStopId,
       );
 
   /// Start of the whole displayed journey, including access walk and waiting.

@@ -56,6 +56,24 @@ class BusArrivalService {
     final schedule = await _scheduleFor(category);
     final nowSeconds = GtfsService.secondsIntoServiceDay(DateTime.now());
     return schedule.stops.values.expand((stop) {
+      final byDirection = schedule.departuresByStopAndDirection[stop.stopId];
+      if (byDirection != null && byDirection.isNotEmpty) {
+        return byDirection.values.map((direction) {
+          final base = _scheduledStop(
+            schedule,
+            stop,
+            nowSeconds,
+            labels: [direction.routeLabel],
+            departures: direction.departureSeconds,
+          );
+          return _withBusDirections(
+            base,
+            _singleBusDirectionSchedule(schedule, stop.stopId, direction),
+            stop.stopId,
+            nowSeconds,
+          );
+        });
+      }
       final byRoute = schedule.departuresByStopAndRoute[stop.stopId];
       if (byRoute == null || byRoute.isEmpty) {
         return [_scheduledStop(schedule, stop, nowSeconds)];
@@ -196,13 +214,15 @@ class BusArrivalService {
           final routeLabel = route?.displayName.isNotEmpty == true
               ? route!.displayName
               : trip.routeId;
+          final terminal =
+              schedule.stops[times.last.stopId]?.name ?? times.last.stopId;
           final rideStops = toIndex - fromIndex;
           final totalMinutes =
               ((finalArrival - nowSeconds) / 60).ceil().clamp(1, 1440);
           candidates.add(RouteOption(
             departureTime: GtfsService.formatSecondsAsClock(departure),
             arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
-            mode: 'Bus · $routeLabel',
+            mode: 'Bus · $routeLabel toward $terminal',
             etaSummary:
                 'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
             status: ServiceUrgency.onTime,
@@ -214,7 +234,7 @@ class BusArrivalService {
               'Leave now and walk ${(accessSeconds / 60).ceil()} min (${access.meters.round()} m) to ${access.stop.name}',
               if (waitMinutes > 0)
                 'Wait about $waitMinutes min at ${access.stop.name}',
-              'Board bus $routeLabel at ${GtfsService.formatSecondsAsClock(departure)}',
+              'Board bus $routeLabel toward $terminal at ${GtfsService.formatSecondsAsClock(departure)}',
               'Stay on the bus for $rideStops stop${rideStops == 1 ? '' : 's'}',
               'Get off at ${egress.stop.name} around ${GtfsService.formatSecondsAsClock(arrival)}',
               'Walk ${(egressSeconds / 60).ceil()} min (${egress.meters.round()} m) to ${destination.name}',
@@ -224,7 +244,7 @@ class BusArrivalService {
               RouteCheckpoint(
                 name: access.stop.name,
                 position: LatLng(access.stop.lat, access.stop.lon),
-                instruction: 'Board bus $routeLabel',
+                instruction: 'Board bus $routeLabel toward $terminal',
                 serviceSeconds: departure,
               ),
               RouteCheckpoint(
@@ -272,6 +292,8 @@ class BusArrivalService {
                   arrival: arrival,
                   stopCount: toIndex - transferIndex,
                   endpointWalkMeters: egress.meters,
+                  destination: schedule.stops[times.last.stopId]?.name ??
+                      times.last.stopId,
                 ));
           }
         }
@@ -317,10 +339,13 @@ class BusArrivalService {
             final totalMinutes =
                 ((finalArrival - nowSeconds) / 60).ceil().clamp(1, 1440);
             final firstRoute = _routeName(schedule, trip);
+            final firstDestination =
+                schedule.stops[times.last.stopId]?.name ?? times.last.stopId;
             candidates.add(RouteOption(
               departureTime: GtfsService.formatSecondsAsClock(departure),
               arrivalTime: GtfsService.formatSecondsAsClock(finalArrival),
-              mode: 'Bus · $firstRoute → ${inbound.routeLabel}',
+              mode:
+                  'Bus · $firstRoute toward $firstDestination → ${inbound.routeLabel} toward ${inbound.destination}',
               etaSummary:
                   'Arrives ${GtfsService.formatSecondsAsClock(finalArrival)} · ${RouteOption.formatMinutes(totalMinutes)} total',
               status: ServiceUrgency.onTime,
@@ -330,9 +355,9 @@ class BusArrivalService {
               arrivalServiceSeconds: finalArrival,
               steps: [
                 'Leave now and walk ${(accessSeconds / 60).ceil()} min (${access.meters.round()} m) to ${access.stop.name}',
-                'Board bus $firstRoute at ${GtfsService.formatSecondsAsClock(departure)}',
+                'Board bus $firstRoute toward $firstDestination at ${GtfsService.formatSecondsAsClock(departure)}',
                 'Ride ${transferIndex - fromIndex} stops to ${transferStop.name}',
-                'Change to bus ${inbound.routeLabel} at ${GtfsService.formatSecondsAsClock(inbound.departure)}',
+                'Change to bus ${inbound.routeLabel} toward ${inbound.destination} at ${GtfsService.formatSecondsAsClock(inbound.departure)}',
                 'Ride ${inbound.stopCount} stops to ${inbound.toStop.name}',
                 'Get off around ${GtfsService.formatSecondsAsClock(inbound.arrival)}',
                 'Walk ${(egressSeconds / 60).ceil()} min (${inbound.endpointWalkMeters.round()} m) to ${destination.name}',
@@ -342,13 +367,14 @@ class BusArrivalService {
                 RouteCheckpoint(
                   name: access.stop.name,
                   position: LatLng(access.stop.lat, access.stop.lon),
-                  instruction: 'Board bus $firstRoute',
+                  instruction: 'Board bus $firstRoute toward $firstDestination',
                   serviceSeconds: departure,
                 ),
                 RouteCheckpoint(
                   name: transferStop.name,
                   position: LatLng(transferStop.lat, transferStop.lon),
-                  instruction: 'Change to bus ${inbound.routeLabel}',
+                  instruction:
+                      'Change to bus ${inbound.routeLabel} toward ${inbound.destination}',
                   serviceSeconds: inbound.departure,
                 ),
                 RouteCheckpoint(
@@ -401,7 +427,7 @@ class BusArrivalService {
           final remaining = next == null || !operating
               ? Duration.zero
               : Duration(seconds: next - nowSeconds);
-          return Stop(
+          final base = Stop(
             name: stop.name,
             platform:
                 routeLabel.isEmpty ? 'Bus stop' : 'Bus stop · $routeLabel',
@@ -422,12 +448,75 @@ class BusArrivalService {
             hasDepartureData: departures.isNotEmpty,
             isOperating: operating,
           );
+          return _withBusDirections(base, schedule, stop.stopId, nowSeconds);
         })
         .where(
             (stop) => (stop.distanceMeters ?? double.infinity) <= radiusMeters)
         .toList()
       ..sort((a, b) => a.distanceMeters!.compareTo(b.distanceMeters!));
     return stops.take(40).toList();
+  }
+
+  _BusSchedule _singleBusDirectionSchedule(_BusSchedule source, String stopId,
+          _BusDirectionSchedule direction) =>
+      _BusSchedule(
+        stops: source.stops,
+        routes: source.routes,
+        trips: source.trips,
+        timesByTrip: source.timesByTrip,
+        routeLabelsByStop: source.routeLabelsByStop,
+        departuresByStop: source.departuresByStop,
+        departuresByStopAndRoute: source.departuresByStopAndRoute,
+        departuresByStopAndDirection: {
+          stopId: {direction.key: direction}
+        },
+        activeTripIds: source.activeTripIds,
+      );
+
+  Stop _withBusDirections(
+      Stop stop, _BusSchedule schedule, String stopId, int nowSeconds) {
+    final schedules =
+        schedule.departuresByStopAndDirection[stopId]?.values.toList() ??
+            const <_BusDirectionSchedule>[];
+    if (schedules.isEmpty) return stop;
+    final options = schedules.map((direction) {
+      final departures = [...direction.departureSeconds]..sort();
+      final upcoming = departures.where((value) => value > nowSeconds);
+      final next = upcoming.isEmpty ? null : upcoming.first;
+      final operating = departures.isNotEmpty &&
+          nowSeconds >= departures.first &&
+          nowSeconds < departures.last;
+      final remaining = next == null || !operating
+          ? Duration.zero
+          : Duration(seconds: next - nowSeconds);
+      return TransitDirectionOption(
+        key: direction.key,
+        destination: direction.destination,
+        routeLabel: direction.routeLabel,
+        transportMode: 'Bus',
+        timeToDeparture: remaining,
+        urgency: !operating || remaining <= const Duration(minutes: 5)
+            ? ServiceUrgency.critical
+            : remaining <= const Duration(minutes: 20)
+                ? ServiceUrgency.closingSoon
+                : ServiceUrgency.onTime,
+        lastService: departures.isEmpty
+            ? '—'
+            : GtfsService.formatSecondsAsClock(departures.last),
+        hasDepartureData: departures.isNotEmpty,
+        isOperating: operating,
+      );
+    }).toList()
+      ..sort((a, b) {
+        if (a.isOperating != b.isOperating) return a.isOperating ? -1 : 1;
+        return a.timeToDeparture.compareTo(b.timeToDeparture);
+      });
+    return stop
+        .copyWith(
+          directionOptions: options,
+          selectedDirectionKey: options.first.key,
+        )
+        .withDirection(options.first.key);
   }
 
   Stop _scheduledStop(
@@ -533,10 +622,37 @@ class BusArrivalService {
         final routeLabel = route == null
             ? (vehicle.routeId.isEmpty ? 'Rapid KL bus' : vehicle.routeId)
             : (route.shortName.isNotEmpty ? route.shortName : route.longName);
+        final terminalId = times.last.stopId;
+        final destination = schedule.stops[terminalId]?.name ?? terminalId;
+        final directionKey =
+            '${trip.routeId}|${trip.directionId ?? 'x'}|$terminalId';
+        final directionSchedule = schedule
+            .departuresByStopAndDirection[gtfsStop.stopId]?[directionKey];
+        final directionDepartures =
+            directionSchedule?.departureSeconds ?? const <int>[];
+        final lastService = directionDepartures.isEmpty
+            ? '—'
+            : GtfsService.formatSecondsAsClock(
+                directionDepartures.reduce((a, b) => a > b ? a : b));
+        final liveDirection = TransitDirectionOption(
+          key: directionKey,
+          destination: destination,
+          routeLabel: routeLabel,
+          transportMode: 'Bus',
+          timeToDeparture: Duration(seconds: etaSeconds.clamp(0, 86400)),
+          urgency: etaSeconds <= 300
+              ? ServiceUrgency.critical
+              : etaSeconds <= 1200
+                  ? ServiceUrgency.closingSoon
+                  : ServiceUrgency.onTime,
+          lastService: lastService,
+          hasDepartureData: true,
+          isOperating: true,
+        );
         estimates.add(BusArrivalEstimate(
           stop: Stop(
             name: gtfsStop.name,
-            platform: 'Bus stop · $routeLabel',
+            platform: 'Bus stop · Toward $destination',
             position: stopPosition,
             timeToDeparture: Duration(seconds: etaSeconds.clamp(0, 86400)),
             urgency: etaSeconds <= 300
@@ -549,9 +665,12 @@ class BusArrivalService {
                 distance.as(LengthUnit.Meter, userLocation, stopPosition),
             transportMode: 'Bus',
             routeLabel: routeLabel,
+            lastService: lastService,
             hasDepartureData: true,
             isOperating: true,
             isLiveEstimate: true,
+            directionOptions: [liveDirection],
+            selectedDirectionKey: directionKey,
           ),
           routeLabel: routeLabel,
           vehicleId: vehicle.id,
@@ -651,6 +770,9 @@ class BusArrivalService {
       times.sort((a, b) => a.stopSequence.compareTo(b.stopSequence));
     }
     final trips = results[2] as List<GtfsTrip>;
+    final stopsById = {
+      for (final stop in results[0] as List<GtfsStop>) stop.stopId: stop
+    };
     final activeTripIds = GtfsService.activeTripIds(
       trips: trips,
       calendar: results[4] as List<GtfsCalendarService>,
@@ -663,13 +785,23 @@ class BusArrivalService {
     final routeByTrip = {
       for (final trip in trips) trip.tripId: routes[trip.routeId],
     };
+    final tripById = {for (final trip in trips) trip.tripId: trip};
     final labelsByStop = <String, Set<String>>{};
     final departuresByStop = <String, List<int>>{};
     final departuresByStopAndRoute = <String, Map<String, List<int>>>{};
+    final departuresByStopAndDirection =
+        <String, Map<String, _BusDirectionSchedule>>{};
     for (final entry in byTrip.entries) {
+      if (entry.value.length < 2) continue;
       final route = routeByTrip[entry.key];
+      final trip = tripById[entry.key];
       if (route == null || route.displayName.isEmpty) continue;
-      for (final time in entry.value) {
+      final terminalId = entry.value.isEmpty ? '' : entry.value.last.stopId;
+      final destination = stopsById[terminalId]?.name ?? terminalId;
+      final directionKey =
+          '${route.routeId}|${trip?.directionId ?? 'x'}|$terminalId';
+      // The final row is an arrival at the terminal, not an outbound service.
+      for (final time in entry.value.take(entry.value.length - 1)) {
         labelsByStop
             .putIfAbsent(time.stopId, () => <String>{})
             .add(route.displayName);
@@ -681,6 +813,18 @@ class BusArrivalService {
             departuresByStopAndRoute
                 .putIfAbsent(time.stopId, () => {})
                 .putIfAbsent(route.displayName, () => [])
+                .add(seconds);
+            departuresByStopAndDirection
+                .putIfAbsent(time.stopId, () => {})
+                .putIfAbsent(
+                  directionKey,
+                  () => _BusDirectionSchedule(
+                    key: directionKey,
+                    destination: destination,
+                    routeLabel: route.displayName,
+                  ),
+                )
+                .departureSeconds
                 .add(seconds);
           }
         }
@@ -695,9 +839,7 @@ class BusArrivalService {
       }
     }
     return _BusSchedule(
-      stops: {
-        for (final stop in results[0] as List<GtfsStop>) stop.stopId: stop
-      },
+      stops: stopsById,
       routes: routes,
       trips: trips,
       timesByTrip: byTrip,
@@ -707,6 +849,7 @@ class BusArrivalService {
       },
       departuresByStop: departuresByStop,
       departuresByStopAndRoute: departuresByStopAndRoute,
+      departuresByStopAndDirection: departuresByStopAndDirection,
       activeTripIds: activeTripIds,
     );
   }
@@ -720,6 +863,8 @@ class _BusSchedule {
   final Map<String, List<String>> routeLabelsByStop;
   final Map<String, List<int>> departuresByStop;
   final Map<String, Map<String, List<int>>> departuresByStopAndRoute;
+  final Map<String, Map<String, _BusDirectionSchedule>>
+      departuresByStopAndDirection;
   final Set<String> activeTripIds;
 
   const _BusSchedule({
@@ -730,6 +875,7 @@ class _BusSchedule {
     required this.routeLabelsByStop,
     required this.departuresByStop,
     required this.departuresByStopAndRoute,
+    required this.departuresByStopAndDirection,
     required this.activeTripIds,
   });
 
@@ -755,6 +901,7 @@ class _BusLeg {
   final int arrival;
   final int stopCount;
   final double endpointWalkMeters;
+  final String destination;
 
   const _BusLeg({
     required this.tripId,
@@ -765,5 +912,19 @@ class _BusLeg {
     required this.arrival,
     required this.stopCount,
     required this.endpointWalkMeters,
+    required this.destination,
+  });
+}
+
+class _BusDirectionSchedule {
+  final String key;
+  final String destination;
+  final String routeLabel;
+  final List<int> departureSeconds = [];
+
+  _BusDirectionSchedule({
+    required this.key,
+    required this.destination,
+    required this.routeLabel,
   });
 }

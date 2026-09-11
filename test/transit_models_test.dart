@@ -21,6 +21,49 @@ void main() {
     expect(ServiceUrgency.critical.label, 'DUE SOON');
   });
 
+  test('selecting a platform direction changes only that departure window', () {
+    const stop = Stop(
+      name: 'KEPONG BARU',
+      platform: 'MRT station',
+      position: LatLng(3.211663, 101.648193),
+      timeToDeparture: Duration(minutes: 2),
+      urgency: ServiceUrgency.critical,
+      gtfsStopId: 'PY10',
+      selectedDirectionKey: 'PYL|0|PY41',
+      directionOptions: [
+        TransitDirectionOption(
+          key: 'PYL|0|PY41',
+          destination: 'PUTRAJAYA SENTRAL',
+          routeLabel: 'PYL — MRT Putrajaya Line',
+          transportMode: 'MRT',
+          timeToDeparture: Duration(minutes: 2),
+          urgency: ServiceUrgency.critical,
+          lastService: '12:44 AM',
+          hasDepartureData: true,
+          isOperating: true,
+        ),
+        TransitDirectionOption(
+          key: 'PYL|1|PY01',
+          destination: 'KWASA DAMANSARA',
+          routeLabel: 'PYL — MRT Putrajaya Line',
+          transportMode: 'MRT',
+          timeToDeparture: Duration(minutes: 4),
+          urgency: ServiceUrgency.critical,
+          lastService: '12:40 AM',
+          hasDepartureData: true,
+          isOperating: true,
+        ),
+      ],
+    );
+
+    final selected = stop.withDirection('PYL|1|PY01');
+
+    expect(selected.directionLabel, 'Toward KWASA DAMANSARA');
+    expect(selected.platform, 'MRT station · Toward KWASA DAMANSARA');
+    expect(selected.timeToDeparture, const Duration(minutes: 4));
+    expect(selected.lastService, '12:40 AM');
+  });
+
   test('planned journey reports scheduled progress and active instruction', () {
     const endpoint = Stop(
       name: 'Station',

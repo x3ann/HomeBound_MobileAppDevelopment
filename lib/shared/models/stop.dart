@@ -1,6 +1,34 @@
 import 'package:latlong2/latlong.dart';
 import '../theme/app_theme.dart';
 
+class TransitDirectionOption {
+  final String key;
+  final String destination;
+  final String routeLabel;
+  final String transportMode;
+  final Duration timeToDeparture;
+  final ServiceUrgency urgency;
+  final String lastService;
+  final bool hasDepartureData;
+  final bool isOperating;
+
+  const TransitDirectionOption({
+    required this.key,
+    required this.destination,
+    required this.routeLabel,
+    required this.transportMode,
+    required this.timeToDeparture,
+    required this.urgency,
+    required this.lastService,
+    required this.hasDepartureData,
+    required this.isOperating,
+  });
+
+  String get label => routeLabel.isEmpty
+      ? 'Toward $destination'
+      : '$routeLabel · Toward $destination';
+}
+
 /// A transit stop/station shown on the Last Service Tracker and Live Map.
 ///
 /// `position`, `name`, `gtfsStopId`, `timeToDeparture`, `urgency` and
@@ -22,6 +50,8 @@ class Stop {
   final bool hasDepartureData;
   final bool isOperating;
   final bool isLiveEstimate;
+  final List<TransitDirectionOption> directionOptions;
+  final String? selectedDirectionKey;
 
   const Stop({
     required this.name,
@@ -38,6 +68,8 @@ class Stop {
     this.hasDepartureData = true,
     this.isOperating = true,
     this.isLiveEstimate = false,
+    this.directionOptions = const [],
+    this.selectedDirectionKey,
   });
 
   Stop copyWith({
@@ -55,6 +87,8 @@ class Stop {
     bool? hasDepartureData,
     bool? isOperating,
     bool? isLiveEstimate,
+    List<TransitDirectionOption>? directionOptions,
+    String? selectedDirectionKey,
   }) {
     return Stop(
       name: name ?? this.name,
@@ -71,6 +105,40 @@ class Stop {
       hasDepartureData: hasDepartureData ?? this.hasDepartureData,
       isOperating: isOperating ?? this.isOperating,
       isLiveEstimate: isLiveEstimate ?? this.isLiveEstimate,
+      directionOptions: directionOptions ?? this.directionOptions,
+      selectedDirectionKey: selectedDirectionKey ?? this.selectedDirectionKey,
+    );
+  }
+
+  bool get hasDirectionChoices => directionOptions.length > 1;
+
+  TransitDirectionOption? get selectedDirection {
+    for (final option in directionOptions) {
+      if (option.key == selectedDirectionKey) return option;
+    }
+    return directionOptions.isEmpty ? null : directionOptions.first;
+  }
+
+  String get directionLabel => selectedDirection == null
+      ? ''
+      : 'Toward ${selectedDirection!.destination}';
+
+  Stop withDirection(String key) {
+    final option =
+        directionOptions.where((item) => item.key == key).firstOrNull;
+    if (option == null) return this;
+    return copyWith(
+      platform: option.transportMode == 'Bus'
+          ? 'Bus stop · Toward ${option.destination}'
+          : '${option.transportMode} station · Toward ${option.destination}',
+      timeToDeparture: option.timeToDeparture,
+      urgency: option.urgency,
+      lastService: option.lastService,
+      transportMode: option.transportMode,
+      routeLabel: option.routeLabel,
+      hasDepartureData: option.hasDepartureData,
+      isOperating: option.isOperating,
+      selectedDirectionKey: option.key,
     );
   }
 

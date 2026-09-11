@@ -7,12 +7,14 @@ small regression model. It never creates synthetic production labels.
 
 1. `collectTransitObservations` runs every minute and reads the official
    GTFS-Realtime vehicle-position feeds for Rapid KL and MRT feeder buses.
-2. A training sample is created only when the same vehicle advances along the
-   same trip. Impossible timing and GPS jumps are discarded. Samples from one
-   feed minute are stored together to keep Firestore operations predictable.
-3. `trainTransitDelayModel` runs daily. It derives excess segment travel time
-   relative to the observed median for that route segment, uses a chronological
-   80/20 train/validation split, and trains a regularized linear regression.
+2. A training sample is created when the same vehicle and trip show credible
+   GPS movement across consecutive observations. Stationary noise and
+   physically impossible jumps are discarded. Samples from one feed minute
+   are stored together to keep Firestore operations predictable.
+3. `trainTransitDelayModel` runs daily. It normalizes GPS travel speed against
+   the typical speed for the same route and direction. The label is excess
+   minutes on a representative ten-minute bus segment. It then uses a
+   chronological 80/20 split to train and validate a linear regression.
 4. A candidate replaces `delayModels/current` only when it has at least 1,000
    usable samples and beats the constant baseline on unseen observations.
 5. The Flutter app reads only the promoted model. Until one exists, it uses its
